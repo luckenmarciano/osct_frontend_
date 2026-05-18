@@ -1,6 +1,7 @@
 {
   "version": 2,
-  "installCommand": "npm install --omit=optional",
+  "installCommand": "npm install --omit=optional && npx prisma generate",
+  "buildCommand": "echo skip",
   "functions": {
     "api/index.js": {
       "maxDuration": 30
