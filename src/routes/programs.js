@@ -1,4 +1,5 @@
 const express = require('express')
+const bcrypt = require('bcryptjs')
 const { z } = require('zod')
 const prisma = require('../lib/prisma')
 const { verifyJWT, requireRole, signQRToken } = require('../middleware/auth')
@@ -83,6 +84,98 @@ router.post(
         create: { user_id: userId, program_id: req.programId },
       })
       res.status(201).json(enrollment)
+    } catch (err) {
+      next(err)
+    }
+  }
+)
+
+// POST /api/v1/programs/:pid/participants — create user + enroll + optional QR email
+router.post(
+  '/:pid/participants',
+  verifyJWT,
+  requireRole('SUPER_ADMIN', 'PROGRAM_ADMIN'),
+  programIsolation,
+  async (req, res, next) => {
+    try {
+      const data = z
+        .object({
+          email: z.string().email(),
+          fullName: z.string().min(1),
+          password: z.string().min(6).optional(),
+          sendQrEmail: z.boolean().optional().default(false),
+        })
+        .parse(req.body)
+
+      const existing = await prisma.user.findUnique({ where: { email: data.email } })
+      if (existing) {
+        return res.status(409).json({ error: 'Email sudah terdaftar' })
+      }
+
+      // Auto-generate password if not provided
+      const plainPassword =
+        data.password || Math.random().toString(36).slice(-10) + 'A1!'
+      const hash = await bcrypt.hash(plainPassword, 10)
+
+      const user = await prisma.user.create({
+        data: {
+          email: data.email,
+          full_name: data.fullName,
+          password_hash: hash,
+          role: 'PARTICIPANT',
+        },
+        select: { id: true, email: true, full_name: true, role: true },
+      })
+
+      const enrollment = await prisma.programEnrollment.create({
+        data: {
+          user_id: user.id,
+          program_id: req.programId,
+        },
+        include: {
+          user: { select: { id: true, email: true, full_name: true } },
+          certificate: true,
+        },
+      })
+
+      let emailResult = null
+      if (data.sendQrEmail) {
+        const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)
+        const qrToken = signQRToken({ userId: user.id, programId: req.programId })
+
+        await prisma.participantLoginQR.upsert({
+          where: { user_id_program_id: { user_id: user.id, program_id: req.programId } },
+          update: { qr_token: qrToken, expires_at: expiresAt },
+          create: {
+            user_id: user.id,
+            program_id: req.programId,
+            qr_token: qrToken,
+            expires_at: expiresAt,
+          },
+        })
+
+        const qrPngDataUrl = await generateLoginQR(qrToken)
+        const program = await prisma.oPRCProgram.findUnique({
+          where: { id: req.programId },
+        })
+
+        const sendResult = await sendLoginQREmail({
+          to: user.email,
+          participantName: user.full_name,
+          programName: program?.name || '',
+          qrPngDataUrl,
+          expiresAt,
+          sentById: req.user.id,
+          programId: req.programId,
+        })
+        emailResult = { sent: true, mocked: !!sendResult?.mocked }
+      }
+
+      res.status(201).json({
+        enrollment,
+        password: data.password ? undefined : plainPassword, // return auto-generated password once
+        emailResult,
+      })
     } catch (err) {
       next(err)
     }
