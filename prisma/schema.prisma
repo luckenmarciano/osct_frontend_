@@ -1,0 +1,510 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+  binaryTargets   = ["native", "rhel-openssl-3.0.x"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  directUrl  = env("DIRECT_URL")
+  extensions = [pgvector(map: "vector", schema: "extensions")]
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  SUPER_ADMIN
+  PROGRAM_ADMIN
+  TRAINER
+  PARTICIPANT
+}
+
+enum LessonType {
+  VIDEO
+  PDF
+  QUIZ
+}
+
+enum TestType {
+  PRETEST
+  POSTTEST
+}
+
+enum QuestionType {
+  MCQ
+  ESSAY
+}
+
+enum AIMessageRole {
+  USER
+  ASSISTANT
+}
+
+enum EmailKind {
+  CUSTOM
+  BROADCAST
+  SESSION_REMINDER
+  CERT_VERIFICATION
+}
+
+// ─── Users & Auth ─────────────────────────────────────────────────────────────
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  password_hash String
+  full_name     String
+  role          UserRole @default(PARTICIPANT)
+  is_active     Boolean  @default(true)
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  enrollments       ProgramEnrollment[]
+  trainer_programs  ProgramTrainer[]
+  login_qrs         ParticipantLoginQR[]
+  watch_sessions    VideoWatchSession[]
+  bookmarks         VideoBookmark[]
+  test_attempts     TestAttempt[]
+  lesson_progress   LessonProgress[]
+  attendances       Attendance[]
+  certificates      Certificate[]       @relation("CertificateUser")
+  ai_conversations  AIConversation[]
+  kb_docs_uploaded  KnowledgeBaseDoc[]
+  audit_logs        AuditLog[]
+  sessions_trained  Session[]           @relation("TrainerSessions")
+  refresh_tokens    RefreshToken[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id         String   @id @default(cuid())
+  user_id    String
+  token      String   @unique
+  expires_at DateTime
+  revoked    Boolean  @default(false)
+  created_at DateTime @default(now())
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@map("refresh_tokens")
+}
+
+// ─── Programs ─────────────────────────────────────────────────────────────────
+
+model OPRCProgram {
+  id          String @id @default(cuid())
+  code        String @unique // oprc-1, oprc-2, oprc-3
+  name        String
+  level       Int    // 1, 2, 3
+  color_theme String // hex or CSS var name
+  description String @db.Text
+  is_active   Boolean @default(true)
+  created_at  DateTime @default(now())
+
+  enrollments      ProgramEnrollment[]
+  trainers         ProgramTrainer[]
+  login_qrs        ParticipantLoginQR[]
+  courses          Course[]
+  course_tests     CourseTest[]
+  sessions         Session[]
+  certificates     Certificate[]
+  kb_docs          KnowledgeBaseDoc[]
+  kb_chunks        KnowledgeBaseChunk[]
+  ai_conversations AIConversation[]
+  audit_logs       AuditLog[]
+  watch_sessions   VideoWatchSession[]
+  bookmarks        VideoBookmark[]
+  test_attempts    TestAttempt[]
+  lesson_progress  LessonProgress[]
+  attendances      Attendance[]
+
+  @@map("oprc_programs")
+}
+
+model ProgramEnrollment {
+  id              String   @id @default(cuid())
+  user_id         String
+  program_id      String
+  pretest_score   Float?
+  posttest_score  Float?
+  attendance_pct  Float    @default(0)
+  cert_eligible   Boolean  @default(false)
+  enrolled_at     DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  user        User        @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  program     OPRCProgram @relation(fields: [program_id], references: [id], onDelete: Cascade)
+  certificate Certificate? @relation("EnrollmentCert")
+
+  @@unique([user_id, program_id])
+  @@map("program_enrollments")
+}
+
+model ProgramTrainer {
+  id         String   @id @default(cuid())
+  user_id    String
+  program_id String
+  assigned_at DateTime @default(now())
+
+  user    User        @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  program OPRCProgram @relation(fields: [program_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_id, program_id])
+  @@map("program_trainers")
+}
+
+model ParticipantLoginQR {
+  id         String   @id @default(cuid())
+  user_id    String
+  program_id String
+  qr_token   String   @unique // JWT with type='qr_login'
+  expires_at DateTime
+  created_at DateTime @default(now())
+
+  user    User        @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  program OPRCProgram @relation(fields: [program_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_id, program_id])
+  @@map("participant_login_qrs")
+}
+
+// ─── Learning Content ─────────────────────────────────────────────────────────
+
+model Course {
+  id          String @id @default(cuid())
+  program_id  String
+  title       String
+  description String @db.Text
+  order_index Int    @default(0)
+  is_published Boolean @default(false)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  program OPRCProgram @relation(fields: [program_id], references: [id], onDelete: Cascade)
+  modules Module[]
+
+  @@map("courses")
+}
+
+model Module {
+  id          String @id @default(cuid())
+  course_id   String
+  title       String
+  order_index Int    @default(0)
+  created_at  DateTime @default(now())
+
+  course  Course   @relation(fields: [course_id], references: [id], onDelete: Cascade)
+  lessons Lesson[]
+
+  @@map("modules")
+}
+
+model Lesson {
+  id          String     @id @default(cuid())
+  module_id   String
+  title       String
+  type        LessonType
+  content_url String?
+  order_index Int        @default(0)
+  created_at  DateTime   @default(now())
+
+  module   Module           @relation(fields: [module_id], references: [id], onDelete: Cascade)
+  video    Video?
+  progress LessonProgress[]
+
+  @@map("lessons")
+}
+
+model Video {
+  id            String  @id @default(cuid())
+  lesson_id     String  @unique
+  title         String
+  hls_url       String?
+  storage_path  String?
+  duration_sec  Int?
+  captions_url  String?
+  thumbnail_url String?
+  created_at    DateTime @default(now())
+
+  lesson         Lesson              @relation(fields: [lesson_id], references: [id], onDelete: Cascade)
+  watch_sessions VideoWatchSession[]
+  bookmarks      VideoBookmark[]
+
+  @@map("videos")
+}
+
+model VideoWatchSession {
+  id               String   @id @default(cuid())
+  user_id          String
+  video_id         String
+  program_id       String
+  watch_pct        Float    @default(0)
+  completed        Boolean  @default(false)
+  last_watched_at  DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  user    User        @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  video   Video       @relation(fields: [video_id], references: [id], onDelete: Cascade)
+  program OPRCProgram @relation(fields: [program_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_id, video_id, program_id])
+  @@map("video_watch_sessions")
+}
+
+model VideoBookmark {
+  id            String   @id @default(cuid())
+  user_id       String
+  video_id      String
+  program_id    String
+  timestamp_sec Int
+  note          String?  @db.Text
+  created_at    DateTime @default(now())
+
+  user    User        @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  video   Video       @relation(fields: [video_id], references: [id], onDelete: Cascade)
+  program OPRCProgram @relation(fields: [program_id], references: [id], onDelete: Cascade)
+
+  @@map("video_bookmarks")
+}
+
+model LessonProgress {
+  id           String    @id @default(cuid())
+  user_id      String
+  lesson_id    String
+  program_id   String
+  completed    Boolean   @default(false)
+  completed_at DateTime?
+  updated_at   DateTime  @updatedAt
+
+  user    User        @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  lesson  Lesson      @relation(fields: [lesson_id], references: [id], onDelete: Cascade)
+  program OPRCProgram @relation(fields: [program_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_id, lesson_id, program_id])
+  @@map("lesson_progress")
+}
+
+// ─── Assessment ───────────────────────────────────────────────────────────────
+
+model CourseTest {
+  id         String   @id @default(cuid())
+  program_id String
+  type       TestType
+  title      String
+  time_limit Int?     // minutes, null = unlimited
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  program   OPRCProgram  @relation(fields: [program_id], references: [id], onDelete: Cascade)
+  questions Question[]
+  attempts  TestAttempt[]
+
+  @@unique([program_id, type])
+  @@map("course_tests")
+}
+
+model Question {
+  id             String       @id @default(cuid())
+  test_id        String
+  body           String       @db.Text
+  type           QuestionType
+  options        Json?        // [{ key: "A", text: "..." }, ...]
+  correct_answer String?      // key for MCQ, null for essay
+  points         Int          @default(1)
+  order_index    Int          @default(0)
+  created_at     DateTime     @default(now())
+
+  test CourseTest @relation(fields: [test_id], references: [id], onDelete: Cascade)
+
+  @@map("questions")
+}
+
+model TestAttempt {
+  id           String    @id @default(cuid())
+  user_id      String
+  test_id      String
+  program_id   String
+  answers      Json      // { question_id: answer_key }
+  score        Float?
+  started_at   DateTime  @default(now())
+  submitted_at DateTime?
+
+  user    User        @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  test    CourseTest  @relation(fields: [test_id], references: [id], onDelete: Cascade)
+  program OPRCProgram @relation(fields: [program_id], references: [id], onDelete: Cascade)
+
+  @@map("test_attempts")
+}
+
+// ─── Sessions & Attendance ────────────────────────────────────────────────────
+
+model Session {
+  id           String   @id @default(cuid())
+  program_id   String
+  trainer_id   String
+  title        String
+  scheduled_at DateTime
+  location     String?
+  is_active    Boolean  @default(false)
+  created_at   DateTime @default(now())
+
+  program    OPRCProgram @relation(fields: [program_id], references: [id], onDelete: Cascade)
+  trainer    User        @relation("TrainerSessions", fields: [trainer_id], references: [id])
+  qr_tokens  QRToken[]
+  attendances Attendance[]
+
+  @@map("sessions")
+}
+
+model QRToken {
+  id         String   @id @default(cuid())
+  session_id String
+  token      String   @unique
+  expires_at DateTime
+  created_at DateTime @default(now())
+
+  session Session @relation(fields: [session_id], references: [id], onDelete: Cascade)
+
+  @@map("qr_tokens")
+}
+
+model Attendance {
+  id          String   @id @default(cuid())
+  session_id  String
+  user_id     String
+  program_id  String
+  scanned_at  DateTime @default(now())
+  latitude    Float?
+  longitude   Float?
+
+  session Session     @relation(fields: [session_id], references: [id], onDelete: Cascade)
+  user    User        @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  program OPRCProgram @relation(fields: [program_id], references: [id], onDelete: Cascade)
+
+  @@unique([session_id, user_id])
+  @@map("attendances")
+}
+
+// ─── Certification ────────────────────────────────────────────────────────────
+
+model Certificate {
+  id                String    @id @default(cuid())
+  enrollment_id     String    @unique
+  program_id        String
+  user_id           String
+  cert_no           String    @unique
+  verification_code String    @unique
+  code_expires_at   DateTime
+  claimed_at        DateTime?
+  pdf_url           String?
+  issued_at         DateTime  @default(now())
+
+  enrollment ProgramEnrollment @relation("EnrollmentCert", fields: [enrollment_id], references: [id], onDelete: Cascade)
+  program    OPRCProgram       @relation(fields: [program_id], references: [id])
+  user       User              @relation("CertificateUser", fields: [user_id], references: [id])
+
+  @@map("certificates")
+}
+
+// ─── AI Knowledge Base ────────────────────────────────────────────────────────
+
+model KnowledgeBaseDoc {
+  id           String    @id @default(cuid())
+  program_id   String
+  uploaded_by  String
+  filename     String
+  storage_url  String
+  file_size    Int?
+  mime_type    String?
+  embedded_at  DateTime?
+  created_at   DateTime  @default(now())
+
+  program  OPRCProgram          @relation(fields: [program_id], references: [id], onDelete: Cascade)
+  uploader User                 @relation(fields: [uploaded_by], references: [id])
+  chunks   KnowledgeBaseChunk[]
+
+  @@map("knowledge_base_docs")
+}
+
+model KnowledgeBaseChunk {
+  id          String @id @default(cuid())
+  doc_id      String
+  program_id  String
+  chunk_text  String @db.Text
+  chunk_index Int
+  // pgvector(768) — Gemini text-embedding-004 output dimension
+  // Inserted/queried via raw SQL since Prisma cannot serialize the vector type.
+  embedding   Unsupported("vector(768)")?
+  created_at  DateTime @default(now())
+
+  doc     KnowledgeBaseDoc @relation(fields: [doc_id], references: [id], onDelete: Cascade)
+  program OPRCProgram      @relation(fields: [program_id], references: [id], onDelete: Cascade)
+
+  @@map("knowledge_base_chunks")
+}
+
+model AIConversation {
+  id         String   @id @default(cuid())
+  user_id    String
+  program_id String
+  title      String?
+  created_at DateTime @default(now())
+
+  user     User        @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  program  OPRCProgram @relation(fields: [program_id], references: [id], onDelete: Cascade)
+  messages AIMessage[]
+
+  @@map("ai_conversations")
+}
+
+model AIMessage {
+  id              String        @id @default(cuid())
+  conversation_id String
+  role            AIMessageRole
+  content         String        @db.Text
+  sources         Json?         // [{ doc_id, filename, chunk_text }]
+  created_at      DateTime      @default(now())
+
+  conversation AIConversation @relation(fields: [conversation_id], references: [id], onDelete: Cascade)
+
+  @@map("ai_messages")
+}
+
+// ─── Audit ────────────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id            String   @id @default(cuid())
+  user_id       String?
+  program_id    String?
+  action        String   // e.g. "CERT_SENT", "USER_LOGIN", "QR_SCANNED"
+  resource_type String?
+  resource_id   String?
+  metadata      Json?
+  ip_address    String?
+  created_at    DateTime @default(now())
+
+  user    User?        @relation(fields: [user_id], references: [id], onDelete: SetNull)
+  program OPRCProgram? @relation(fields: [program_id], references: [id], onDelete: SetNull)
+
+  @@map("audit_logs")
+}
+
+model EmailLog {
+  id           String    @id @default(cuid())
+  program_id   String?
+  sent_by_id   String?
+  kind         EmailKind @default(CUSTOM)
+  to_email     String
+  to_name      String?
+  subject      String
+  body_preview String    @db.Text
+  status       String    // sent | failed | mocked
+  error        String?   @db.Text
+  metadata     Json?
+  created_at   DateTime  @default(now())
+
+  @@index([program_id, created_at])
+  @@map("email_logs")
+}

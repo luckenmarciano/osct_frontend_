@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "buildCommand": "prisma generate",
+  "functions": {
+    "api/index.js": {
+      "maxDuration": 30
+    }
+  },
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/api/index.js" }
+  ]
+}

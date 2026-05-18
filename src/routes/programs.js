@@ -1,0 +1,203 @@
+const express = require('express')
+const { z } = require('zod')
+const prisma = require('../lib/prisma')
+const { verifyJWT, requireRole, signQRToken } = require('../middleware/auth')
+const { programIsolation } = require('../middleware/programIsolation')
+const { generateLoginQR } = require('../services/qr.service')
+const { sendLoginQREmail } = require('../services/email.service')
+
+const router = express.Router()
+
+// GET /api/v1/programs — list programs visible to the user
+router.get('/', verifyJWT, async (req, res, next) => {
+  try {
+    const { role, programIds } = req.user
+    const where = role === 'SUPER_ADMIN' ? {} : { id: { in: programIds } }
+    const programs = await prisma.oPRCProgram.findMany({
+      where,
+      orderBy: { level: 'asc' },
+    })
+    res.json(programs)
+  } catch (err) {
+    next(err)
+  }
+})
+
+// GET /api/v1/programs/:pid — detail
+router.get('/:pid', verifyJWT, programIsolation, async (req, res, next) => {
+  try {
+    const program = await prisma.oPRCProgram.findUnique({
+      where: { id: req.programId },
+      include: {
+        _count: {
+          select: {
+            enrollments: true,
+            courses: true,
+            certificates: { where: { claimed_at: { not: null } } },
+          },
+        },
+      },
+    })
+    if (!program) return res.status(404).json({ error: 'Program not found' })
+    res.json(program)
+  } catch (err) {
+    next(err)
+  }
+})
+
+// GET /api/v1/programs/:pid/enrollments — list participants
+router.get(
+  '/:pid/enrollments',
+  verifyJWT,
+  requireRole('SUPER_ADMIN', 'PROGRAM_ADMIN', 'TRAINER'),
+  programIsolation,
+  async (req, res, next) => {
+    try {
+      const enrollments = await prisma.programEnrollment.findMany({
+        where: { program_id: req.programId },
+        include: {
+          user: { select: { id: true, email: true, full_name: true } },
+          certificate: true,
+        },
+        orderBy: { enrolled_at: 'desc' },
+      })
+      res.json(enrollments)
+    } catch (err) {
+      next(err)
+    }
+  }
+)
+
+// POST /api/v1/programs/:pid/enrollments — enroll a participant
+router.post(
+  '/:pid/enrollments',
+  verifyJWT,
+  requireRole('SUPER_ADMIN', 'PROGRAM_ADMIN'),
+  programIsolation,
+  async (req, res, next) => {
+    try {
+      const { userId } = z.object({ userId: z.string().min(1) }).parse(req.body)
+      const enrollment = await prisma.programEnrollment.upsert({
+        where: { user_id_program_id: { user_id: userId, program_id: req.programId } },
+        update: {},
+        create: { user_id: userId, program_id: req.programId },
+      })
+      res.status(201).json(enrollment)
+    } catch (err) {
+      next(err)
+    }
+  }
+)
+
+// POST /api/v1/programs/:pid/enrollments/:eid/qr — generate participant login QR
+router.post(
+  '/:pid/enrollments/:eid/qr',
+  verifyJWT,
+  requireRole('SUPER_ADMIN', 'PROGRAM_ADMIN'),
+  programIsolation,
+  async (req, res, next) => {
+    try {
+      const { eid } = req.params
+      const enrollment = await prisma.programEnrollment.findFirst({
+        where: { id: eid, program_id: req.programId },
+      })
+      if (!enrollment) return res.status(404).json({ error: 'Enrollment not found' })
+
+      const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)
+      const qrToken = signQRToken({
+        userId: enrollment.user_id,
+        programId: enrollment.program_id,
+      })
+
+      await prisma.participantLoginQR.upsert({
+        where: {
+          user_id_program_id: {
+            user_id: enrollment.user_id,
+            program_id: enrollment.program_id,
+          },
+        },
+        update: { qr_token: qrToken, expires_at: expiresAt },
+        create: {
+          user_id: enrollment.user_id,
+          program_id: enrollment.program_id,
+          qr_token: qrToken,
+          expires_at: expiresAt,
+        },
+      })
+
+      const qrPngDataUrl = await generateLoginQR(qrToken)
+      res.json({ qrToken, qrPngDataUrl, expiresAt })
+    } catch (err) {
+      next(err)
+    }
+  }
+)
+
+// POST /api/v1/programs/:pid/enrollments/:eid/qr/email — generate + send QR to participant
+router.post(
+  '/:pid/enrollments/:eid/qr/email',
+  verifyJWT,
+  requireRole('SUPER_ADMIN', 'PROGRAM_ADMIN'),
+  programIsolation,
+  async (req, res, next) => {
+    try {
+      const { eid } = req.params
+      const enrollment = await prisma.programEnrollment.findFirst({
+        where: { id: eid, program_id: req.programId },
+        include: {
+          user: { select: { id: true, email: true, full_name: true } },
+        },
+      })
+      if (!enrollment) return res.status(404).json({ error: 'Enrollment not found' })
+      if (!enrollment.user?.email) {
+        return res.status(400).json({ error: 'Participant has no email' })
+      }
+
+      const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)
+      const qrToken = signQRToken({
+        userId: enrollment.user_id,
+        programId: enrollment.program_id,
+      })
+
+      await prisma.participantLoginQR.upsert({
+        where: {
+          user_id_program_id: {
+            user_id: enrollment.user_id,
+            program_id: enrollment.program_id,
+          },
+        },
+        update: { qr_token: qrToken, expires_at: expiresAt },
+        create: {
+          user_id: enrollment.user_id,
+          program_id: enrollment.program_id,
+          qr_token: qrToken,
+          expires_at: expiresAt,
+        },
+      })
+
+      const qrPngDataUrl = await generateLoginQR(qrToken)
+      const program = await prisma.oPRCProgram.findUnique({ where: { id: req.programId } })
+
+      const sendResult = await sendLoginQREmail({
+        to: enrollment.user.email,
+        participantName: enrollment.user.full_name,
+        programName: program?.name || '',
+        qrPngDataUrl,
+        expiresAt,
+        sentById: req.user.id,
+        programId: req.programId,
+      })
+
+      res.json({
+        ok: true,
+        mocked: !!sendResult?.mocked,
+        sentTo: enrollment.user.email,
+        expiresAt,
+      })
+    } catch (err) {
+      next(err)
+    }
+  }
+)
+
+module.exports = router
