@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "buildCommand": "prisma generate",
+  "installCommand": "npm install --omit=optional",
   "functions": {
     "api/index.js": {
       "maxDuration": 30
