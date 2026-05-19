@@ -2,6 +2,7 @@ const express = require('express')
 const { z } = require('zod')
 const prisma = require('../lib/prisma')
 const { verifyJWT } = require('../middleware/auth')
+const { recomputeAttendancePct } = require('../services/enrollment.service')
 
 const router = express.Router()
 
@@ -47,7 +48,19 @@ router.post('/scan', verifyJWT, async (req, res, next) => {
       },
     })
 
-    res.json({ ok: true, sessionTitle: session.title, attendance })
+    // Recompute attendance_pct + cert_eligible for this user in this program
+    const recomputed = await recomputeAttendancePct({
+      userId: req.user.id,
+      programId: session.program_id,
+    })
+
+    res.json({
+      ok: true,
+      sessionTitle: session.title,
+      attendance,
+      attendancePct: recomputed.attendancePct,
+      certEligible: recomputed.certEligible,
+    })
   } catch (err) {
     next(err)
   }
