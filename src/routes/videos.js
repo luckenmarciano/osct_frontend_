@@ -188,6 +188,28 @@ router.post(
   }
 )
 
+// GET /api/v1/videos/programs/:pid/:videoId/bookmarks — current user's bookmarks
+router.get(
+  '/programs/:pid/:videoId/bookmarks',
+  verifyJWT,
+  programIsolation,
+  async (req, res, next) => {
+    try {
+      const bookmarks = await prisma.videoBookmark.findMany({
+        where: {
+          user_id: req.user.id,
+          video_id: req.params.videoId,
+          program_id: req.programId,
+        },
+        orderBy: { timestamp_sec: 'asc' },
+      })
+      res.json(bookmarks)
+    } catch (err) {
+      next(err)
+    }
+  }
+)
+
 // POST /api/v1/videos/programs/:pid/:videoId/bookmark
 router.post(
   '/programs/:pid/:videoId/bookmark',
@@ -212,6 +234,29 @@ router.post(
         },
       })
       res.status(201).json(bookmark)
+    } catch (err) {
+      next(err)
+    }
+  }
+)
+
+// DELETE /api/v1/videos/programs/:pid/bookmarks/:bookmarkId
+router.delete(
+  '/programs/:pid/bookmarks/:bookmarkId',
+  verifyJWT,
+  programIsolation,
+  async (req, res, next) => {
+    try {
+      const bookmark = await prisma.videoBookmark.findFirst({
+        where: {
+          id: req.params.bookmarkId,
+          user_id: req.user.id,
+          program_id: req.programId,
+        },
+      })
+      if (!bookmark) return res.status(404).json({ error: 'Bookmark not found' })
+      await prisma.videoBookmark.delete({ where: { id: bookmark.id } })
+      res.json({ ok: true })
     } catch (err) {
       next(err)
     }
