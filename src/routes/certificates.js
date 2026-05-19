@@ -6,6 +6,7 @@ const { verifyJWT, requireRole } = require('../middleware/auth')
 const { programIsolation } = require('../middleware/programIsolation')
 const { sendVerificationCodeEmail } = require('../services/email.service')
 const { generateCertificatePDF } = require('../services/cert.service')
+const { auditLog } = require('../services/audit.service')
 
 const router = express.Router()
 
@@ -94,6 +95,15 @@ router.post(
             programName: program.name,
             code,
             expiresAt: codeExpiresAt,
+          })
+          auditLog({
+            action: 'CERT_CODE_SENT',
+            userId: req.user.id,
+            programId: req.programId,
+            resourceType: 'certificate',
+            resourceId: cert.id,
+            metadata: { to: enrollment.user.email, certNo: cert.cert_no },
+            req,
           })
           results.push({ enrollmentId: eid, ok: true, certId: cert.id })
         } catch (e) {

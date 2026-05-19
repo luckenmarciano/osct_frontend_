@@ -5,6 +5,7 @@ const { programIsolation } = require('../middleware/programIsolation')
 const { upload } = require('../middleware/upload')
 const { uploadToStorage } = require('../services/storage.service')
 const { ingestDocument } = require('../services/ai.service')
+const { auditLog } = require('../services/audit.service')
 
 const router = express.Router()
 
@@ -58,6 +59,16 @@ router.post(
         mimeType: req.file.mimetype,
       }).catch((e) => console.error('[KB ingest error]', e))
 
+      auditLog({
+        action: 'KB_DOC_UPLOADED',
+        userId: req.user.id,
+        programId: req.programId,
+        resourceType: 'kb_doc',
+        resourceId: doc.id,
+        metadata: { filename: doc.filename, size: doc.file_size },
+        req,
+      })
+
       res.status(201).json(doc)
     } catch (err) {
       next(err)
@@ -84,6 +95,17 @@ router.delete(
         doc.id
       )
       await prisma.knowledgeBaseDoc.delete({ where: { id: doc.id } })
+
+      auditLog({
+        action: 'KB_DOC_DELETED',
+        userId: req.user.id,
+        programId: req.programId,
+        resourceType: 'kb_doc',
+        resourceId: doc.id,
+        metadata: { filename: doc.filename },
+        req,
+      })
+
       res.json({ ok: true })
     } catch (err) {
       next(err)
@@ -128,6 +150,15 @@ router.post(
         buffer,
         mimeType: doc.mime_type || 'application/octet-stream',
       }).catch((e) => console.error('[KB reindex error]', e))
+
+      auditLog({
+        action: 'KB_DOC_REINDEXED',
+        userId: req.user.id,
+        programId: req.programId,
+        resourceType: 'kb_doc',
+        resourceId: doc.id,
+        req,
+      })
 
       res.json({ ok: true, message: 'Reindex queued' })
     } catch (err) {

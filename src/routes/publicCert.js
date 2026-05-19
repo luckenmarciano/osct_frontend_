@@ -3,6 +3,7 @@ const express = require('express')
 const { z } = require('zod')
 const prisma = require('../lib/prisma')
 const { generateCertificatePDF } = require('../services/cert.service')
+const { auditLog } = require('../services/audit.service')
 
 const router = express.Router()
 
@@ -45,6 +46,18 @@ router.post('/claim', async (req, res, next) => {
         pdf_url: pdfUrl,
       },
     })
+
+    if (!cert.claimed_at) {
+      auditLog({
+        action: 'CERT_CLAIMED',
+        userId: cert.user_id,
+        programId: cert.program_id,
+        resourceType: 'certificate',
+        resourceId: cert.id,
+        metadata: { certNo: cert.cert_no },
+        req,
+      })
+    }
 
     res.json({
       certNo: updated.cert_no,

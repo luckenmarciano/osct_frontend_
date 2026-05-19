@@ -12,6 +12,7 @@ const {
   verifyResetToken,
 } = require('../middleware/auth')
 const { sendPasswordResetEmail } = require('../services/email.service')
+const { auditLog } = require('../services/audit.service')
 
 const router = express.Router()
 
@@ -62,6 +63,8 @@ router.post('/login', async (req, res, next) => {
       data: { user_id: user.id, token: refreshToken, expires_at: expiresAt },
     })
 
+    auditLog({ action: 'USER_LOGIN', userId: user.id, req, metadata: { method: 'password' } })
+
     res.json({
       accessToken,
       refreshToken,
@@ -99,6 +102,14 @@ router.post('/qr-login', async (req, res, next) => {
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
     await prisma.refreshToken.create({
       data: { user_id: user.id, token: refreshToken, expires_at: expiresAt },
+    })
+
+    auditLog({
+      action: 'USER_LOGIN',
+      userId: user.id,
+      programId: decoded.programId,
+      req,
+      metadata: { method: 'qr' },
     })
 
     res.json({
@@ -220,6 +231,8 @@ router.post('/reset-password', async (req, res, next) => {
       where: { user_id: user.id, revoked: false },
       data: { revoked: true },
     })
+
+    auditLog({ action: 'PASSWORD_RESET', userId: user.id, req })
 
     res.json({ ok: true })
   } catch (err) {

@@ -6,6 +6,7 @@ const { verifyJWT, requireRole, signQRToken } = require('../middleware/auth')
 const { programIsolation } = require('../middleware/programIsolation')
 const { generateLoginQR } = require('../services/qr.service')
 const { sendLoginQREmail } = require('../services/email.service')
+const { auditLog } = require('../services/audit.service')
 
 const router = express.Router()
 
@@ -171,6 +172,16 @@ router.post(
         emailResult = { sent: true, mocked: !!sendResult?.mocked }
       }
 
+      auditLog({
+        action: 'PARTICIPANT_CREATED',
+        userId: req.user.id,
+        programId: req.programId,
+        resourceType: 'enrollment',
+        resourceId: enrollment.id,
+        metadata: { email: user.email, qrEmailed: !!data.sendQrEmail },
+        req,
+      })
+
       res.status(201).json({
         enrollment,
         password: data.password ? undefined : plainPassword, // return auto-generated password once
@@ -279,6 +290,16 @@ router.post(
         expiresAt,
         sentById: req.user.id,
         programId: req.programId,
+      })
+
+      auditLog({
+        action: 'QR_LOGIN_SENT',
+        userId: req.user.id,
+        programId: req.programId,
+        resourceType: 'enrollment',
+        resourceId: enrollment.id,
+        metadata: { to: enrollment.user.email, mocked: !!sendResult?.mocked },
+        req,
       })
 
       res.json({

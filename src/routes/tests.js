@@ -9,6 +9,7 @@ const {
   POSTTEST_THRESHOLD,
   ATTENDANCE_THRESHOLD,
 } = require('../services/enrollment.service')
+const { auditLog } = require('../services/audit.service')
 
 const router = express.Router()
 
@@ -337,6 +338,16 @@ router.post(
           programId: attempt.program_id,
         })
       }
+
+      auditLog({
+        action: 'ESSAY_GRADED',
+        userId: req.user.id,
+        programId: attempt.program_id,
+        resourceType: 'attempt',
+        resourceId: attempt.id,
+        metadata: { testType: attempt.test.type, score, gradedFor: attempt.user_id },
+        req,
+      })
 
       res.json({
         attemptId: updated.id,
