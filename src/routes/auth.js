@@ -4,6 +4,7 @@ const { z } = require('zod')
 const prisma = require('../lib/prisma')
 const env = require('../config/env')
 const {
+  verifyJWT,
   signAccessToken,
   signRefreshToken,
   verifyRefreshToken,
@@ -84,12 +85,54 @@ router.post('/login', async (req, res, next) => {
 // POST /api/v1/auth/qr-login — scan QR code
 router.post('/qr-login', async (req, res, next) => {
   try {
-    const { qrToken } = z.object({ qrToken: z.string().min(1) }).parse(req.body)
+    const { qrToken, deviceId, deviceLabel } = z
+      .object({
+        qrToken: z.string().min(1),
+        deviceId: z.string().optional(),
+        deviceLabel: z.string().optional(),
+      })
+      .parse(req.body)
     const decoded = verifyQRToken(qrToken)
 
     const user = await prisma.user.findUnique({ where: { id: decoded.userId } })
     if (!user || !user.is_active) {
       return res.status(401).json({ error: 'User not found or inactive' })
+    }
+
+    // Device trust tracking (FR-1.7). The login itself still proceeds; the
+    // response carries a `newDevice` hint so the client can prompt the user
+    // to confirm. Existing confirmed devices skip the prompt.
+    let newDevice = false
+    if (deviceId) {
+      const existing = await prisma.deviceTrust.findUnique({
+        where: { user_id_device_id: { user_id: user.id, device_id: deviceId } },
+      })
+      if (!existing) {
+        // Has the user trusted ANY device before?
+        const hasConfirmed = await prisma.deviceTrust.findFirst({
+          where: { user_id: user.id, confirmed_at: { not: null } },
+          select: { id: true },
+        })
+        // First device ever -> auto-confirm. Otherwise mark as new + unconfirmed.
+        await prisma.deviceTrust.create({
+          data: {
+            user_id: user.id,
+            device_id: deviceId,
+            device_label: deviceLabel || null,
+            confirmed_at: hasConfirmed ? null : new Date(),
+          },
+        })
+        newDevice = !!hasConfirmed
+      } else {
+        await prisma.deviceTrust.update({
+          where: { id: existing.id },
+          data: {
+            last_seen_at: new Date(),
+            ...(deviceLabel && !existing.device_label && { device_label: deviceLabel }),
+          },
+        })
+        newDevice = !existing.confirmed_at
+      }
     }
 
     const payload = await buildTokenPayload(user)
@@ -109,7 +152,7 @@ router.post('/qr-login', async (req, res, next) => {
       userId: user.id,
       programId: decoded.programId,
       req,
-      metadata: { method: 'qr' },
+      metadata: { method: 'qr', newDevice, deviceId: deviceId || null },
     })
 
     res.json({
@@ -123,6 +166,8 @@ router.post('/qr-login', async (req, res, next) => {
         programIds: payload.programIds,
       },
       currentProgramId: decoded.programId,
+      newDevice,
+      deviceId: deviceId || null,
     })
   } catch (err) {
     if (err.name === 'JsonWebTokenError' || err.name === 'TokenExpiredError') {
@@ -234,6 +279,81 @@ router.post('/reset-password', async (req, res, next) => {
 
     auditLog({ action: 'PASSWORD_RESET', userId: user.id, req })
 
+    res.json({ ok: true })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// ─── Device trust (FR-1.7) ────────────────────────────────────────────────────
+
+// GET /api/v1/auth/devices — list current user's known devices
+router.get('/devices', verifyJWT, async (req, res, next) => {
+  try {
+    const devices = await prisma.deviceTrust.findMany({
+      where: { user_id: req.user.id },
+      orderBy: { last_seen_at: 'desc' },
+      select: {
+        id: true,
+        device_id: true,
+        device_label: true,
+        first_seen_at: true,
+        last_seen_at: true,
+        confirmed_at: true,
+      },
+    })
+    res.json(devices)
+  } catch (err) {
+    next(err)
+  }
+})
+
+// POST /api/v1/auth/devices/:deviceId/confirm — mark device as trusted
+router.post('/devices/:deviceId/confirm', verifyJWT, async (req, res, next) => {
+  try {
+    const device = await prisma.deviceTrust.findUnique({
+      where: {
+        user_id_device_id: { user_id: req.user.id, device_id: req.params.deviceId },
+      },
+    })
+    if (!device) return res.status(404).json({ error: 'Device not found' })
+    if (device.confirmed_at) {
+      return res.json({ ok: true, alreadyConfirmed: true })
+    }
+    const updated = await prisma.deviceTrust.update({
+      where: { id: device.id },
+      data: { confirmed_at: new Date() },
+    })
+    auditLog({
+      action: 'DEVICE_CONFIRMED',
+      userId: req.user.id,
+      resourceType: 'device_trust',
+      resourceId: device.id,
+      req,
+    })
+    res.json({ ok: true, device: updated })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// DELETE /api/v1/auth/devices/:deviceId — revoke a device
+router.delete('/devices/:deviceId', verifyJWT, async (req, res, next) => {
+  try {
+    const device = await prisma.deviceTrust.findUnique({
+      where: {
+        user_id_device_id: { user_id: req.user.id, device_id: req.params.deviceId },
+      },
+    })
+    if (!device) return res.status(404).json({ error: 'Device not found' })
+    await prisma.deviceTrust.delete({ where: { id: device.id } })
+    auditLog({
+      action: 'DEVICE_REVOKED',
+      userId: req.user.id,
+      resourceType: 'device_trust',
+      resourceId: device.id,
+      req,
+    })
     res.json({ ok: true })
   } catch (err) {
     next(err)
