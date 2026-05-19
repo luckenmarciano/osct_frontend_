@@ -111,4 +111,37 @@ router.get('/conversations/:id/messages', verifyJWT, async (req, res, next) => {
   }
 })
 
+// POST /api/v1/ai/messages/:id/feedback — thumbs up/down on an assistant reply
+router.post('/messages/:id/feedback', verifyJWT, async (req, res, next) => {
+  try {
+    const { feedback } = z
+      .object({ feedback: z.enum(['UP', 'DOWN']).nullable() })
+      .parse(req.body)
+
+    const msg = await prisma.aIMessage.findUnique({
+      where: { id: req.params.id },
+      include: { conversation: true },
+    })
+    if (!msg) return res.status(404).json({ error: 'Message not found' })
+    if (msg.conversation.user_id !== req.user.id) {
+      return res.status(403).json({ error: 'Not your conversation' })
+    }
+    if (msg.role !== 'ASSISTANT') {
+      return res.status(400).json({ error: 'Can only rate assistant replies' })
+    }
+
+    const updated = await prisma.aIMessage.update({
+      where: { id: msg.id },
+      data: {
+        feedback,
+        feedback_at: feedback ? new Date() : null,
+      },
+      select: { id: true, feedback: true, feedback_at: true },
+    })
+    res.json(updated)
+  } catch (err) {
+    next(err)
+  }
+})
+
 module.exports = router

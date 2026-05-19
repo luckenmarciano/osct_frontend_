@@ -6,14 +6,27 @@ const { recomputeAttendancePct } = require('../services/enrollment.service')
 
 const router = express.Router()
 
+// Haversine distance in meters between two (lat,lng) points.
+function distanceMeters(lat1, lng1, lat2, lng2) {
+  const R = 6371000
+  const toRad = (d) => (d * Math.PI) / 180
+  const dLat = toRad(lat2 - lat1)
+  const dLng = toRad(lng2 - lng1)
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2
+  return 2 * R * Math.asin(Math.sqrt(a))
+}
+
 // POST /api/v1/attendance/scan — participant scans rotating QR
 router.post('/scan', verifyJWT, async (req, res, next) => {
   try {
-    const { token, latitude, longitude } = z
+    const { token, latitude, longitude, deviceId } = z
       .object({
         token: z.string().min(1),
         latitude: z.number().optional(),
         longitude: z.number().optional(),
+        deviceId: z.string().optional(),
       })
       .parse(req.body)
 
@@ -36,15 +49,58 @@ router.post('/scan', verifyJWT, async (req, res, next) => {
       return res.status(403).json({ error: 'Not enrolled in this program' })
     }
 
+    // Anomaly detection
+    const flags = []
+
+    // 1) Geo-fence — if session has a geo_radius_m + center, and scanner provided coords
+    if (
+      session.location_lat != null &&
+      session.location_lng != null &&
+      session.geo_radius_m != null &&
+      latitude != null &&
+      longitude != null
+    ) {
+      const dist = distanceMeters(
+        latitude, longitude, session.location_lat, session.location_lng
+      )
+      if (dist > session.geo_radius_m) {
+        flags.push(`geo_outside_fence(${Math.round(dist)}m)`)
+      }
+    }
+
+    // 2) Duplicate device — same device fingerprint already scanned in this session by another user
+    if (deviceId) {
+      const dup = await prisma.attendance.findFirst({
+        where: {
+          session_id: session.id,
+          device_id: deviceId,
+          user_id: { not: req.user.id },
+        },
+        select: { user_id: true },
+      })
+      if (dup) flags.push('duplicate_device')
+    }
+
+    const isFlagged = flags.length > 0
+
     const attendance = await prisma.attendance.upsert({
       where: { session_id_user_id: { session_id: session.id, user_id: req.user.id } },
-      update: { latitude, longitude },
+      update: {
+        latitude,
+        longitude,
+        device_id: deviceId,
+        is_flagged: isFlagged,
+        flag_reason: isFlagged ? flags.join(',') : null,
+      },
       create: {
         session_id: session.id,
         user_id: req.user.id,
         program_id: session.program_id,
         latitude,
         longitude,
+        device_id: deviceId,
+        is_flagged: isFlagged,
+        flag_reason: isFlagged ? flags.join(',') : null,
       },
     })
 
@@ -60,6 +116,7 @@ router.post('/scan', verifyJWT, async (req, res, next) => {
       attendance,
       attendancePct: recomputed.attendancePct,
       certEligible: recomputed.certEligible,
+      flags,
     })
   } catch (err) {
     next(err)

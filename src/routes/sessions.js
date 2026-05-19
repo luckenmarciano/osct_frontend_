@@ -62,6 +62,9 @@ router.post(
           title: z.string().min(1),
           scheduledAt: z.coerce.date(),
           location: z.string().optional(),
+          locationLat: z.number().min(-90).max(90).optional(),
+          locationLng: z.number().min(-180).max(180).optional(),
+          geoRadiusM: z.number().int().min(10).max(50000).optional(),
         })
         .parse(req.body)
 
@@ -79,6 +82,9 @@ router.post(
           title: data.title,
           scheduled_at: data.scheduledAt,
           location: data.location,
+          location_lat: data.locationLat,
+          location_lng: data.locationLng,
+          geo_radius_m: data.geoRadiusM,
         },
       })
       res.status(201).json(session)

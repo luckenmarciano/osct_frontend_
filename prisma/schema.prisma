@@ -41,11 +41,17 @@ enum AIMessageRole {
   ASSISTANT
 }
 
+enum AIFeedback {
+  UP
+  DOWN
+}
+
 enum EmailKind {
   CUSTOM
   BROADCAST
   SESSION_REMINDER
   CERT_VERIFICATION
+  PASSWORD_RESET
 }
 
 // ─── Users & Auth ─────────────────────────────────────────────────────────────
@@ -66,6 +72,7 @@ model User {
   watch_sessions    VideoWatchSession[]
   bookmarks         VideoBookmark[]
   test_attempts     TestAttempt[]
+  quiz_attempts     QuizAttempt[]       @relation("UserQuizAttempts")
   lesson_progress   LessonProgress[]
   attendances       Attendance[]
   certificates      Certificate[]       @relation("CertificateUser")
@@ -74,8 +81,27 @@ model User {
   audit_logs        AuditLog[]
   sessions_trained  Session[]           @relation("TrainerSessions")
   refresh_tokens    RefreshToken[]
+  trusted_devices   DeviceTrust[]
 
   @@map("users")
+}
+
+// Per-user-per-device trust ledger (FR-1.7). After the first QR login
+// from a new device fingerprint, the device must be confirmed by the
+// user. Confirmed entries skip the prompt on subsequent logins.
+model DeviceTrust {
+  id              String    @id @default(cuid())
+  user_id         String
+  device_id       String    // sha256 hex of UA + screen + tz + locale
+  device_label    String?   // human-readable summary (browser / os)
+  first_seen_at   DateTime  @default(now())
+  last_seen_at    DateTime  @default(now())
+  confirmed_at    DateTime?
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_id, device_id])
+  @@map("device_trusts")
 }
 
 model RefreshToken {
@@ -212,9 +238,61 @@ model Lesson {
 
   module   Module           @relation(fields: [module_id], references: [id], onDelete: Cascade)
   video    Video?
+  quiz     Quiz?
   progress LessonProgress[]
 
   @@map("lessons")
+}
+
+// Per-lesson quiz (FR-8). Distinct from CourseTest which is the
+// program-level pretest/posttest.
+model Quiz {
+  id            String   @id @default(cuid())
+  lesson_id     String   @unique
+  title         String
+  passing_score Float    @default(70)
+  max_attempts  Int      @default(3)
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  lesson    Lesson         @relation(fields: [lesson_id], references: [id], onDelete: Cascade)
+  questions QuizQuestion[]
+  attempts  QuizAttempt[]
+
+  @@map("quizzes")
+}
+
+model QuizQuestion {
+  id             String       @id @default(cuid())
+  quiz_id        String
+  body           String       @db.Text
+  type           QuestionType
+  options        Json?
+  correct_answer String?
+  points         Int          @default(1)
+  order_index    Int          @default(0)
+  created_at     DateTime     @default(now())
+
+  quiz Quiz @relation(fields: [quiz_id], references: [id], onDelete: Cascade)
+
+  @@map("quiz_questions")
+}
+
+model QuizAttempt {
+  id           String    @id @default(cuid())
+  quiz_id      String
+  user_id      String
+  program_id   String
+  answers      Json
+  score        Float?
+  started_at   DateTime  @default(now())
+  submitted_at DateTime?
+
+  quiz Quiz @relation(fields: [quiz_id], references: [id], onDelete: Cascade)
+  user User @relation("UserQuizAttempts", fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id, quiz_id])
+  @@map("quiz_attempts")
 }
 
 model Video {
@@ -347,6 +425,11 @@ model Session {
   title        String
   scheduled_at DateTime
   location     String?
+  // Optional geo-fence: if set, attendance scans are flagged when scanner
+  // location is outside geo_radius_m of (location_lat, location_lng).
+  location_lat Float?
+  location_lng Float?
+  geo_radius_m Int?
   is_active    Boolean  @default(false)
   created_at   DateTime @default(now())
 
@@ -371,19 +454,23 @@ model QRToken {
 }
 
 model Attendance {
-  id          String   @id @default(cuid())
-  session_id  String
-  user_id     String
-  program_id  String
-  scanned_at  DateTime @default(now())
-  latitude    Float?
-  longitude   Float?
+  id            String   @id @default(cuid())
+  session_id    String
+  user_id       String
+  program_id    String
+  scanned_at    DateTime @default(now())
+  latitude      Float?
+  longitude     Float?
+  device_id     String?  // sha256 fingerprint, used for duplicate-device anomaly
+  is_flagged    Boolean  @default(false)
+  flag_reason   String?  // e.g. 'geo_outside_fence', 'duplicate_device'
 
   session Session     @relation(fields: [session_id], references: [id], onDelete: Cascade)
   user    User        @relation(fields: [user_id], references: [id], onDelete: Cascade)
   program OPRCProgram @relation(fields: [program_id], references: [id], onDelete: Cascade)
 
   @@unique([session_id, user_id])
+  @@index([session_id, device_id])
   @@map("attendances")
 }
 
@@ -465,6 +552,8 @@ model AIMessage {
   role            AIMessageRole
   content         String        @db.Text
   sources         Json?         // [{ doc_id, filename, chunk_text }]
+  feedback        AIFeedback?   // user thumbs up/down on assistant replies
+  feedback_at     DateTime?
   created_at      DateTime      @default(now())
 
   conversation AIConversation @relation(fields: [conversation_id], references: [id], onDelete: Cascade)

@@ -104,6 +104,173 @@ router.get(
   }
 )
 
+// GET /api/v1/reports/programs/:pid/imo — IMO OPRC compliance summary (JSON)
+router.get(
+  '/programs/:pid/imo',
+  verifyJWT,
+  requireRole('SUPER_ADMIN', 'PROGRAM_ADMIN'),
+  programIsolation,
+  async (req, res, next) => {
+    try {
+      const [program, enrollments, sessions] = await Promise.all([
+        prisma.oPRCProgram.findUnique({ where: { id: req.programId } }),
+        prisma.programEnrollment.findMany({
+          where: { program_id: req.programId },
+          include: {
+            user: { select: { full_name: true, email: true } },
+            certificate: { select: { cert_no: true, claimed_at: true, issued_at: true } },
+          },
+        }),
+        prisma.session.findMany({
+          where: { program_id: req.programId },
+          select: { id: true, scheduled_at: true, title: true },
+          orderBy: { scheduled_at: 'asc' },
+        }),
+      ])
+
+      if (!program) return res.status(404).json({ error: 'Program not found' })
+
+      const total = enrollments.length
+      const certified = enrollments.filter((e) => e.certificate?.claimed_at).length
+      const eligible = enrollments.filter((e) => e.cert_eligible).length
+      const withPosttest = enrollments.filter((e) => e.posttest_score != null)
+      const withBoth = enrollments.filter((e) => e.pretest_score != null && e.posttest_score != null)
+
+      const avg = (arr, key) => arr.length ? arr.reduce((s, e) => s + (e[key] ?? 0), 0) / arr.length : 0
+      const avgPretest = avg(enrollments.filter((e) => e.pretest_score != null), 'pretest_score')
+      const avgPosttest = avg(withPosttest, 'posttest_score')
+      const avgGain = withBoth.length
+        ? withBoth.reduce((s, e) => s + (e.posttest_score - e.pretest_score), 0) / withBoth.length
+        : 0
+      const avgAttendance = avg(enrollments, 'attendance_pct')
+
+      // Compliance gates (defaults per PRD §FR-7.3 / §FR-9)
+      const POSTTEST_THRESHOLD = 70
+      const ATTENDANCE_THRESHOLD = 80
+
+      res.json({
+        program: {
+          id: program.id,
+          code: program.code,
+          name: program.name,
+          level: program.level,
+          generatedAt: new Date().toISOString(),
+        },
+        compliance: {
+          imoStandard: 'IMO OPRC 1990 Model Course',
+          thresholds: {
+            posttestMinScore: POSTTEST_THRESHOLD,
+            attendanceMinPct: ATTENDANCE_THRESHOLD,
+          },
+          sessionCount: sessions.length,
+        },
+        outcomes: {
+          totalEnrolled: total,
+          totalEligibleForCert: eligible,
+          totalCertified: certified,
+          certificationRatePct: total ? Number(((certified / total) * 100).toFixed(2)) : 0,
+          eligibilityRatePct: total ? Number(((eligible / total) * 100).toFixed(2)) : 0,
+        },
+        scores: {
+          avgPretest: Number(avgPretest.toFixed(2)),
+          avgPosttest: Number(avgPosttest.toFixed(2)),
+          avgLearningGain: Number(avgGain.toFixed(2)),
+          avgAttendancePct: Number(avgAttendance.toFixed(2)),
+        },
+        participants: enrollments.map((e) => ({
+          name: e.user.full_name,
+          email: e.user.email,
+          pretest: e.pretest_score,
+          posttest: e.posttest_score,
+          gain:
+            e.posttest_score != null && e.pretest_score != null
+              ? Number((e.posttest_score - e.pretest_score).toFixed(2))
+              : null,
+          attendancePct: Number((e.attendance_pct ?? 0).toFixed(2)),
+          certEligible: e.cert_eligible,
+          certNo: e.certificate?.cert_no || null,
+          certClaimedAt: e.certificate?.claimed_at || null,
+        })),
+      })
+    } catch (err) {
+      next(err)
+    }
+  }
+)
+
+// GET /api/v1/reports/programs/:pid/imo.csv — IMO compliance report as CSV
+router.get(
+  '/programs/:pid/imo.csv',
+  verifyJWT,
+  requireRole('SUPER_ADMIN', 'PROGRAM_ADMIN'),
+  programIsolation,
+  async (req, res, next) => {
+    try {
+      const [program, enrollments] = await Promise.all([
+        prisma.oPRCProgram.findUnique({ where: { id: req.programId } }),
+        prisma.programEnrollment.findMany({
+          where: { program_id: req.programId },
+          include: {
+            user: { select: { full_name: true, email: true } },
+            certificate: { select: { cert_no: true, claimed_at: true } },
+          },
+          orderBy: { enrolled_at: 'asc' },
+        }),
+      ])
+
+      if (!program) return res.status(404).json({ error: 'Program not found' })
+
+      const headerRows = [
+        ['IMO OPRC Compliance Report'],
+        ['Program', program.name],
+        ['Level', String(program.level)],
+        ['Code', program.code],
+        ['Generated', new Date().toISOString()],
+        ['Standard', 'IMO OPRC 1990 Model Course'],
+        ['Posttest Min Score', '70'],
+        ['Attendance Min %', '80'],
+        [],
+      ]
+      const dataHeader = [
+        'Name', 'Email', 'Pretest', 'Posttest', 'Learning Gain',
+        'Attendance %', 'Cert Eligible', 'Cert No', 'Cert Claimed At',
+      ]
+      const dataRows = enrollments.map((e) => {
+        const gain =
+          e.posttest_score != null && e.pretest_score != null
+            ? e.posttest_score - e.pretest_score
+            : null
+        return [
+          e.user.full_name,
+          e.user.email,
+          fmtNum(e.pretest_score),
+          fmtNum(e.posttest_score),
+          fmtNum(gain),
+          fmtNum(e.attendance_pct),
+          e.cert_eligible ? 'Yes' : 'No',
+          e.certificate?.cert_no || '',
+          e.certificate?.claimed_at ? new Date(e.certificate.claimed_at).toISOString() : '',
+        ]
+      })
+
+      const lines = [
+        ...headerRows.map((r) => r.map(escapeCsv).join(',')),
+        dataHeader.map(escapeCsv).join(','),
+        ...dataRows.map((r) => r.map(escapeCsv).join(',')),
+      ]
+      const csv = '﻿' + lines.join('\r\n') + '\r\n'
+
+      const safeName = (program.code || 'program').replace(/[^a-zA-Z0-9-]/g, '-')
+      const dateStr = new Date().toISOString().slice(0, 10)
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+      res.setHeader('Content-Disposition', `attachment; filename="imo-${safeName}-${dateStr}.csv"`)
+      res.send(csv)
+    } catch (err) {
+      next(err)
+    }
+  }
+)
+
 // GET /api/v1/reports/programs/:pid/analytics — aggregated stats
 router.get(
   '/programs/:pid/analytics',
