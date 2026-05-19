@@ -411,13 +411,17 @@ model LessonProgress {
 // ─── Assessment ───────────────────────────────────────────────────────────────
 
 model CourseTest {
-  id         String   @id @default(cuid())
-  program_id String
-  type       TestType
-  title      String
-  time_limit Int?     // minutes, null = unlimited
-  created_at DateTime @default(now())
-  updated_at DateTime @updatedAt
+  id           String   @id @default(cuid())
+  program_id   String
+  type         TestType
+  title        String
+  time_limit   Int?     // minutes, null = unlimited
+  // Admin-configurable cap (FR-7.3). Defaults applied at creation:
+  // 1 for PRETEST, 2 for POSTTEST. Existing rows default to 1 via the
+  // column default — backfill manually if needed via UI.
+  max_attempts Int      @default(1)
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
 
   program   OPRCProgram  @relation(fields: [program_id], references: [id], onDelete: Cascade)
   questions Question[]
