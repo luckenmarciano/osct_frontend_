@@ -113,12 +113,25 @@ async function main() {
   })
   console.log('  ✓ Participant enrolled in oprc-1')
 
-  // 5. Sample course for each program
+  // 5. Sample course for each program — idempotent by (program_id, title)
   for (const code of ['oprc-1', 'oprc-2', 'oprc-3']) {
+    const title = `${programs[code].name} — Pengantar`
+    const existing = await prisma.course.findFirst({
+      where: { program_id: programs[code].id, title },
+      select: { id: true },
+    })
+    if (existing) {
+      await prisma.course.update({
+        where: { id: existing.id },
+        data: { status: 'PUBLISHED', is_published: true, quota: 30 },
+      })
+      console.log(`  ✓ Course already present for ${code}: ${title}`)
+      continue
+    }
     const course = await prisma.course.create({
       data: {
         program_id: programs[code].id,
-        title: `${programs[code].name} — Pengantar`,
+        title,
         description: `Modul pengantar untuk ${programs[code].name}`,
         order_index: 0,
         status: 'PUBLISHED',
