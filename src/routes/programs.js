@@ -7,6 +7,11 @@ const { programIsolation } = require('../middleware/programIsolation')
 const { generateLoginQR } = require('../services/qr.service')
 const { sendLoginQREmail } = require('../services/email.service')
 const { auditLog } = require('../services/audit.service')
+const { upload } = require('../middleware/upload')
+const {
+  importParticipantsCSV,
+  REQUIRED_COLUMNS,
+} = require('../services/participantImport.service')
 
 const router = express.Router()
 
@@ -308,6 +313,60 @@ router.post(
         sentTo: enrollment.user.email,
         expiresAt,
       })
+    } catch (err) {
+      next(err)
+    }
+  }
+)
+
+// GET /api/v1/programs/:pid/participants/import/template — download empty CSV with required headers
+router.get(
+  '/:pid/participants/import/template',
+  verifyJWT,
+  requireRole('SUPER_ADMIN', 'PROGRAM_ADMIN'),
+  programIsolation,
+  async (req, res, next) => {
+    try {
+      const header = REQUIRED_COLUMNS.join(',')
+      const sample = REQUIRED_COLUMNS.map(() => '').join(',')
+      const csv = '﻿' + header + '\r\n' + sample + '\r\n'
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+      res.setHeader('Content-Disposition', 'attachment; filename="participant-import-template.csv"')
+      res.send(csv)
+    } catch (err) {
+      next(err)
+    }
+  }
+)
+
+// POST /api/v1/programs/:pid/participants/import — batch CSV import (FR-4.2)
+router.post(
+  '/:pid/participants/import',
+  verifyJWT,
+  requireRole('SUPER_ADMIN', 'PROGRAM_ADMIN'),
+  programIsolation,
+  upload.single('file'),
+  async (req, res, next) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: 'CSV file is required' })
+      const isCsv =
+        req.file.mimetype === 'text/csv' ||
+        /\.csv$/i.test(req.file.originalname || '')
+      if (!isCsv) {
+        return res.status(400).json({ error: 'File harus berupa CSV (.csv)' })
+      }
+
+      const sendQrEmail = req.body.sendQrEmail === 'true' || req.body.sendQrEmail === '1'
+
+      const result = await importParticipantsCSV({
+        csvBuffer: req.file.buffer,
+        programId: req.programId,
+        sendQrEmail,
+        actingUserId: req.user.id,
+        req,
+      })
+
+      res.json(result)
     } catch (err) {
       next(err)
     }

@@ -21,7 +21,11 @@ const schema = z.object({
   EMAIL_FROM: z.string().default('OSCT Platform <noreply@example.com>'),
 
   PORT: z.coerce.number().default(4000),
-  CLIENT_URL: z.string().default('http://localhost:5173'),
+  // Comma-separated list of allowed frontend origins (no trailing slash).
+  // Override per-environment in Vercel project settings.
+  CLIENT_URL: z
+    .string()
+    .default('http://localhost:5173,https://osct-frontend-tawny.vercel.app'),
   NODE_ENV: z.string().default('development'),
 })
 

@@ -10,6 +10,7 @@ const PROGRAMS = [
     name: 'OPRC Level 1',
     level: 1,
     color_theme: '#EA580C', // orange-600
+    icon: 'shield',
     description:
       'Pelatihan tingkat operator lapangan, kru, dan staf terminal. Fokus: dasar peralatan, keselamatan, respons awal.',
   },
@@ -18,6 +19,7 @@ const PROGRAMS = [
     name: 'OPRC Level 2',
     level: 2,
     color_theme: '#0891B2', // cyan-600
+    icon: 'compass',
     description:
       'Pelatihan tingkat supervisor, perwira kapal, koordinator. Fokus: manajemen insiden (ICS), strategi respons, koordinasi.',
   },
@@ -26,6 +28,7 @@ const PROGRAMS = [
     name: 'OPRC Level 3',
     level: 3,
     color_theme: '#1E3A8A', // navy
+    icon: 'anchor',
     description:
       'Pelatihan tingkat manajemen senior, regulator, pembuat kebijakan. Fokus: kebijakan nasional, perencanaan kontingensi, aspek hukum/finansial.',
   },
@@ -118,7 +121,9 @@ async function main() {
         title: `${programs[code].name} — Pengantar`,
         description: `Modul pengantar untuk ${programs[code].name}`,
         order_index: 0,
+        status: 'PUBLISHED',
         is_published: true,
+        quota: 30,
         modules: {
           create: [
             {

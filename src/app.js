@@ -5,8 +5,28 @@ const env = require('./config/env')
 
 const app = express()
 
+// Support a comma-separated CLIENT_URL list so localhost (dev) and the
+// deployed frontend(s) can both call the API. Trailing slashes on stored
+// values are stripped because browsers send Origin without one and the
+// `cors` package compares strings exactly.
+const allowedOrigins = env.CLIENT_URL
+  .split(',')
+  .map((s) => s.trim().replace(/\/$/, ''))
+  .filter(Boolean)
+
 app.use(helmet())
-app.use(cors({ origin: env.CLIENT_URL, credentials: true }))
+app.use(
+  cors({
+    origin(origin, cb) {
+      // Server-to-server / curl / health checks have no Origin header
+      if (!origin) return cb(null, true)
+      const normalized = origin.replace(/\/$/, '')
+      if (allowedOrigins.includes(normalized)) return cb(null, true)
+      return cb(new Error(`CORS blocked for origin: ${origin}`))
+    },
+    credentials: true,
+  })
+)
 app.use(express.json({ limit: '20mb' }))
 app.use(express.urlencoded({ extended: true }))
 

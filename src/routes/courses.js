@@ -6,12 +6,27 @@ const { programIsolation } = require('../middleware/programIsolation')
 
 const router = express.Router()
 
-// GET /api/v1/courses/programs/:pid — list courses in a program
+// GET /api/v1/courses/programs/:pid — list courses in a program.
+// Participants only see PUBLISHED courses; trainer/admin see all unless
+// ?status= is provided explicitly.
 router.get('/programs/:pid', verifyJWT, programIsolation, async (req, res, next) => {
   try {
+    const isStaff = ['SUPER_ADMIN', 'PROGRAM_ADMIN', 'TRAINER'].includes(req.user.role)
+    const requested = typeof req.query.status === 'string' ? req.query.status.toUpperCase() : null
+    const allowedStatuses = ['DRAFT', 'PUBLISHED', 'ARCHIVED']
+
+    let where = { program_id: req.programId }
+    if (!isStaff) {
+      where.status = 'PUBLISHED'
+    } else if (requested && allowedStatuses.includes(requested)) {
+      where.status = requested
+    }
+
     const courses = await prisma.course.findMany({
-      where: { program_id: req.programId, is_published: true },
-      include: { _count: { select: { modules: true } } },
+      where,
+      include: {
+        _count: { select: { modules: true } },
+      },
       orderBy: { order_index: 'asc' },
     })
     res.json(courses)
@@ -65,14 +80,72 @@ router.post(
           title: z.string().min(1),
           description: z.string().default(''),
           order_index: z.number().int().default(0),
-          is_published: z.boolean().default(false),
+          status: z.enum(['DRAFT', 'PUBLISHED', 'ARCHIVED']).default('DRAFT'),
+          start_date: z.coerce.date().nullable().optional(),
+          end_date: z.coerce.date().nullable().optional(),
+          quota: z.number().int().min(1).nullable().optional(),
         })
         .parse(req.body)
 
+      if (data.start_date && data.end_date && data.end_date < data.start_date) {
+        return res.status(400).json({ error: 'end_date harus setelah start_date' })
+      }
+
       const course = await prisma.course.create({
-        data: { ...data, program_id: req.programId },
+        data: {
+          ...data,
+          program_id: req.programId,
+          is_published: data.status === 'PUBLISHED',
+        },
       })
       res.status(201).json(course)
+    } catch (err) {
+      next(err)
+    }
+  }
+)
+
+// PUT /api/v1/courses/programs/:pid/:id — update course
+router.put(
+  '/programs/:pid/:id',
+  verifyJWT,
+  requireRole('SUPER_ADMIN', 'PROGRAM_ADMIN', 'TRAINER'),
+  programIsolation,
+  async (req, res, next) => {
+    try {
+      const data = z
+        .object({
+          title: z.string().min(1).optional(),
+          description: z.string().optional(),
+          order_index: z.number().int().optional(),
+          status: z.enum(['DRAFT', 'PUBLISHED', 'ARCHIVED']).optional(),
+          start_date: z.coerce.date().nullable().optional(),
+          end_date: z.coerce.date().nullable().optional(),
+          quota: z.number().int().min(1).nullable().optional(),
+        })
+        .parse(req.body)
+
+      const existing = await prisma.course.findFirst({
+        where: { id: req.params.id, program_id: req.programId },
+      })
+      if (!existing) return res.status(404).json({ error: 'Course not found' })
+
+      const startDate = data.start_date !== undefined ? data.start_date : existing.start_date
+      const endDate = data.end_date !== undefined ? data.end_date : existing.end_date
+      if (startDate && endDate && endDate < startDate) {
+        return res.status(400).json({ error: 'end_date harus setelah start_date' })
+      }
+
+      const updateData = { ...data }
+      if (data.status !== undefined) {
+        updateData.is_published = data.status === 'PUBLISHED'
+      }
+
+      const course = await prisma.course.update({
+        where: { id: existing.id },
+        data: updateData,
+      })
+      res.json(course)
     } catch (err) {
       next(err)
     }

@@ -159,6 +159,24 @@ router.delete(
   }
 )
 
+// Helper: load session and assert the caller has access to its program.
+// SUPER_ADMIN sees everything; everyone else must be in programIds.
+async function loadSessionWithAccess(req, res) {
+  const session = await prisma.session.findUnique({ where: { id: req.params.id } })
+  if (!session) {
+    res.status(404).json({ error: 'Session not found' })
+    return null
+  }
+  if (
+    req.user.role !== 'SUPER_ADMIN' &&
+    !req.user.programIds.includes(session.program_id)
+  ) {
+    res.status(403).json({ error: 'No access to this session' })
+    return null
+  }
+  return session
+}
+
 // POST /api/v1/sessions/:id/qr/start — begin session, first rotating QR token
 router.post(
   '/:id/qr/start',
@@ -166,8 +184,8 @@ router.post(
   requireRole('TRAINER', 'PROGRAM_ADMIN', 'SUPER_ADMIN'),
   async (req, res, next) => {
     try {
-      const session = await prisma.session.findUnique({ where: { id: req.params.id } })
-      if (!session) return res.status(404).json({ error: 'Session not found' })
+      const session = await loadSessionWithAccess(req, res)
+      if (!session) return
 
       await prisma.session.update({
         where: { id: session.id },
@@ -188,13 +206,16 @@ router.get(
   requireRole('TRAINER', 'PROGRAM_ADMIN', 'SUPER_ADMIN'),
   async (req, res, next) => {
     try {
+      const session = await loadSessionWithAccess(req, res)
+      if (!session) return
+
       const latest = await prisma.qRToken.findFirst({
-        where: { session_id: req.params.id },
+        where: { session_id: session.id },
         orderBy: { created_at: 'desc' },
       })
 
       if (!latest || latest.expires_at < new Date()) {
-        const { token, qrPngDataUrl, expiresAt } = await rotateSessionToken(req.params.id)
+        const { token, qrPngDataUrl, expiresAt } = await rotateSessionToken(session.id)
         return res.json({ token, qrPngDataUrl, expiresAt })
       }
 
@@ -207,17 +228,25 @@ router.get(
 )
 
 // GET /api/v1/sessions/:id/attendees
-router.get('/:id/attendees', verifyJWT, async (req, res, next) => {
-  try {
-    const attendees = await prisma.attendance.findMany({
-      where: { session_id: req.params.id },
-      include: { user: { select: { id: true, full_name: true, email: true } } },
-      orderBy: { scanned_at: 'desc' },
-    })
-    res.json(attendees)
-  } catch (err) {
-    next(err)
+router.get(
+  '/:id/attendees',
+  verifyJWT,
+  requireRole('TRAINER', 'PROGRAM_ADMIN', 'SUPER_ADMIN'),
+  async (req, res, next) => {
+    try {
+      const session = await loadSessionWithAccess(req, res)
+      if (!session) return
+
+      const attendees = await prisma.attendance.findMany({
+        where: { session_id: session.id },
+        include: { user: { select: { id: true, full_name: true, email: true } } },
+        orderBy: { scanned_at: 'desc' },
+      })
+      res.json(attendees)
+    } catch (err) {
+      next(err)
+    }
   }
-})
+)
 
 module.exports = router

@@ -7,6 +7,39 @@ const { auditLog } = require('../services/audit.service')
 
 const router = express.Router()
 
+// Scope users visible to a PROGRAM_ADMIN to those touching their programs.
+// SUPER_ADMIN sees everyone. Other roles are blocked by requireRole upstream.
+function programScopedUserWhere(req) {
+  if (req.user.role === 'SUPER_ADMIN') return {}
+  const programIds = req.user.programIds || []
+  if (programIds.length === 0) {
+    return { id: '__none__' } // empty result for PROGRAM_ADMIN without programs
+  }
+  return {
+    OR: [
+      { enrollments: { some: { program_id: { in: programIds } } } },
+      { trainer_programs: { some: { program_id: { in: programIds } } } },
+    ],
+  }
+}
+
+async function assertCanManageUser(req, targetUserId) {
+  if (req.user.role === 'SUPER_ADMIN') return true
+  const programIds = req.user.programIds || []
+  if (programIds.length === 0) return false
+  const link = await prisma.user.findFirst({
+    where: {
+      id: targetUserId,
+      OR: [
+        { enrollments: { some: { program_id: { in: programIds } } } },
+        { trainer_programs: { some: { program_id: { in: programIds } } } },
+      ],
+    },
+    select: { id: true },
+  })
+  return !!link
+}
+
 // GET /api/v1/users — list users (admin)
 router.get(
   '/',
@@ -15,6 +48,7 @@ router.get(
   async (req, res, next) => {
     try {
       const users = await prisma.user.findMany({
+        where: programScopedUserWhere(req),
         select: {
           id: true,
           email: true,
@@ -101,6 +135,15 @@ router.put(
         })
         .parse(req.body)
 
+      if (!(await assertCanManageUser(req, req.params.id))) {
+        return res.status(403).json({ error: 'No access to this user' })
+      }
+
+      // Only SUPER_ADMIN may change roles (prevent privilege escalation by PROGRAM_ADMIN)
+      if (data.role !== undefined && req.user.role !== 'SUPER_ADMIN') {
+        return res.status(403).json({ error: 'Only super admin can change roles' })
+      }
+
       const updates = {}
       if (data.fullName !== undefined) updates.full_name = data.fullName
       if (data.role !== undefined) updates.role = data.role
@@ -142,6 +185,11 @@ router.delete(
       // Program admins cannot remove a super admin
       if (req.user.role === 'PROGRAM_ADMIN' && target.role === 'SUPER_ADMIN') {
         return res.status(403).json({ error: 'Tidak berwenang menghapus super admin' })
+      }
+
+      // Program admins can only delete users tied to their programs
+      if (!(await assertCanManageUser(req, target.id))) {
+        return res.status(403).json({ error: 'User di luar program Anda' })
       }
 
       try {
