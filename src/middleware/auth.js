@@ -53,6 +53,20 @@ function verifyQRToken(token) {
   return decoded
 }
 
+function signResetToken(userId) {
+  return jwt.sign(
+    { userId, type: 'password_reset' },
+    env.JWT_QR_SECRET,
+    { expiresIn: '1h' }
+  )
+}
+
+function verifyResetToken(token) {
+  const decoded = jwt.verify(token, env.JWT_QR_SECRET)
+  if (decoded.type !== 'password_reset') throw new Error('Invalid reset token type')
+  return decoded
+}
+
 module.exports = {
   verifyJWT,
   requireRole,
@@ -61,4 +75,6 @@ module.exports = {
   verifyRefreshToken,
   signQRToken,
   verifyQRToken,
+  signResetToken,
+  verifyResetToken,
 }

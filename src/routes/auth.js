@@ -2,12 +2,16 @@ const express = require('express')
 const bcrypt = require('bcryptjs')
 const { z } = require('zod')
 const prisma = require('../lib/prisma')
+const env = require('../config/env')
 const {
   signAccessToken,
   signRefreshToken,
   verifyRefreshToken,
   verifyQRToken,
+  signResetToken,
+  verifyResetToken,
 } = require('../middleware/auth')
+const { sendPasswordResetEmail } = require('../services/email.service')
 
 const router = express.Router()
 
@@ -154,6 +158,69 @@ router.post('/logout', async (req, res, next) => {
         data: { revoked: true },
       })
     }
+    res.json({ ok: true })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// POST /api/v1/auth/forgot-password — request reset link
+// Always returns 200 to avoid email enumeration. Only sends email if user exists.
+router.post('/forgot-password', async (req, res, next) => {
+  try {
+    const { email } = z
+      .object({ email: z.string().email() })
+      .parse(req.body)
+
+    const user = await prisma.user.findUnique({ where: { email } })
+    if (user && user.is_active) {
+      const token = signResetToken(user.id)
+      const resetUrl = `${env.CLIENT_URL}/?reset=${encodeURIComponent(token)}`
+      // Fire-and-forget: don't fail the response on email error
+      sendPasswordResetEmail({
+        to: user.email,
+        fullName: user.full_name,
+        resetUrl,
+      }).catch((e) => console.error('[forgot-password email]', e.message))
+    }
+
+    res.json({ ok: true })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// POST /api/v1/auth/reset-password — set new password using reset token
+router.post('/reset-password', async (req, res, next) => {
+  try {
+    const { token, password } = z
+      .object({ token: z.string().min(1), password: z.string().min(6) })
+      .parse(req.body)
+
+    let decoded
+    try {
+      decoded = verifyResetToken(token)
+    } catch {
+      return res.status(401).json({ error: 'Link reset tidak valid atau sudah kadaluarsa.' })
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: decoded.userId } })
+    if (!user || !user.is_active) {
+      return res.status(404).json({ error: 'Akun tidak ditemukan' })
+    }
+
+    const hash = await bcrypt.hash(password, 10)
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { password_hash: hash },
+    })
+
+    // Invalidate all existing refresh tokens for this user
+    await prisma.refreshToken.updateMany({
+      where: { user_id: user.id, revoked: false },
+      data: { revoked: true },
+    })
+
     res.json({ ok: true })
   } catch (err) {
     next(err)

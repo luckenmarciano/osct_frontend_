@@ -252,10 +252,62 @@ async function sendLoginQREmail({ to, participantName, programName, qrPngDataUrl
   }
 }
 
+async function sendPasswordResetEmail({ to, fullName, resetUrl }) {
+  const subject = `[OSCT] Reset Password Anda`
+  const html = `
+  <div style="font-family: system-ui, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px;">
+    <h2 style="color: #0F172A;">Reset Password</h2>
+    <p>Hai ${escapeHtml(fullName || '')},</p>
+    <p>Kami menerima permintaan untuk mengatur ulang password akun OSCT Anda. Klik tombol di bawah untuk membuat password baru:</p>
+    <div style="text-align:center; margin:24px 0;">
+      <a href="${resetUrl}" style="background:#0F172A; color:white; padding:12px 24px; text-decoration:none; border-radius:6px; display:inline-block;">Reset Password</a>
+    </div>
+    <p style="color:#64748B; font-size:13px;">Atau buka URL berikut di browser Anda:</p>
+    <p style="word-break:break-all; font-family:monospace; font-size:12px; color:#0F172A;">${resetUrl}</p>
+    <p style="color:#64748B; font-size:13px; margin-top:24px;">
+      Link ini berlaku 1 jam. Jika Anda tidak meminta reset password, abaikan email ini — password Anda tetap aman.
+    </p>
+  </div>
+  `
+
+  const baseLog = {
+    program_id: null,
+    sent_by_id: null,
+    kind: 'CUSTOM',
+    to_email: to,
+    to_name: fullName || null,
+    subject,
+    body_preview: 'Password reset link',
+  }
+
+  if (!env.RESEND_API_KEY) {
+    console.log(`[EMAIL — would send password reset to ${to}]`)
+    console.log(`  Reset URL: ${resetUrl}`)
+    await safeLog({ ...baseLog, status: 'mocked' })
+    return { mocked: true, resetUrl }
+  }
+
+  try {
+    const { data, error } = await getResend().emails.send({
+      from: env.EMAIL_FROM,
+      to,
+      subject,
+      html,
+    })
+    if (error) throw error
+    await safeLog({ ...baseLog, status: 'sent' })
+    return data
+  } catch (err) {
+    await safeLog({ ...baseLog, status: 'failed', error: err.message })
+    throw err
+  }
+}
+
 module.exports = {
   sendVerificationCodeEmail,
   sendCustomEmail,
   sendBroadcastEmails,
   sendSessionReminderEmail,
   sendLoginQREmail,
+  sendPasswordResetEmail,
 }
