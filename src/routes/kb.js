@@ -91,4 +91,49 @@ router.delete(
   }
 )
 
+// POST /api/v1/kb/programs/:pid/:docId/reindex — wipe chunks + re-embed
+router.post(
+  '/programs/:pid/:docId/reindex',
+  verifyJWT,
+  requireRole('SUPER_ADMIN', 'PROGRAM_ADMIN', 'TRAINER'),
+  programIsolation,
+  async (req, res, next) => {
+    try {
+      const doc = await prisma.knowledgeBaseDoc.findFirst({
+        where: { id: req.params.docId, program_id: req.programId },
+      })
+      if (!doc) return res.status(404).json({ error: 'Not found' })
+
+      // Wipe existing chunks
+      await prisma.$executeRawUnsafe(
+        `DELETE FROM "knowledge_base_chunks" WHERE doc_id = $1`,
+        doc.id
+      )
+      await prisma.knowledgeBaseDoc.update({
+        where: { id: doc.id },
+        data: { embedded_at: null },
+      })
+
+      // Re-download original file from storage public URL
+      const resp = await fetch(doc.storage_url)
+      if (!resp.ok) {
+        return res.status(500).json({ error: `Failed to fetch source file (${resp.status})` })
+      }
+      const buffer = Buffer.from(await resp.arrayBuffer())
+
+      // Trigger embedding in background
+      ingestDocument({
+        docId: doc.id,
+        programId: req.programId,
+        buffer,
+        mimeType: doc.mime_type || 'application/octet-stream',
+      }).catch((e) => console.error('[KB reindex error]', e))
+
+      res.json({ ok: true, message: 'Reindex queued' })
+    } catch (err) {
+      next(err)
+    }
+  }
+)
+
 module.exports = router

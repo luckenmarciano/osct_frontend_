@@ -5,6 +5,18 @@ const { programIsolation } = require('../middleware/programIsolation')
 
 const router = express.Router()
 
+function escapeCsv(value) {
+  if (value == null) return ''
+  const s = String(value)
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`
+  return s
+}
+
+function fmtNum(n) {
+  if (n == null) return ''
+  return Number.isFinite(n) ? Number(n).toFixed(2) : ''
+}
+
 // GET /api/v1/reports/programs/:pid/progress — participants progress
 router.get(
   '/programs/:pid/progress',
@@ -34,6 +46,58 @@ router.get(
         certEligible: e.cert_eligible,
       }))
       res.json(data)
+    } catch (err) {
+      next(err)
+    }
+  }
+)
+
+// GET /api/v1/reports/programs/:pid/progress.csv — same as progress, exported as CSV
+router.get(
+  '/programs/:pid/progress.csv',
+  verifyJWT,
+  requireRole('SUPER_ADMIN', 'PROGRAM_ADMIN', 'TRAINER'),
+  programIsolation,
+  async (req, res, next) => {
+    try {
+      const [program, enrollments] = await Promise.all([
+        prisma.oPRCProgram.findUnique({ where: { id: req.programId } }),
+        prisma.programEnrollment.findMany({
+          where: { program_id: req.programId },
+          include: { user: { select: { full_name: true, email: true } } },
+          orderBy: { enrolled_at: 'asc' },
+        }),
+      ])
+
+      const headers = [
+        'Nama', 'Email', 'Pretest', 'Posttest', 'Learning Gain',
+        'Attendance %', 'Cert Eligible', 'Enrolled At',
+      ]
+      const rows = enrollments.map((e) => {
+        const gain =
+          e.posttest_score != null && e.pretest_score != null
+            ? e.posttest_score - e.pretest_score
+            : null
+        return [
+          e.user.full_name,
+          e.user.email,
+          fmtNum(e.pretest_score),
+          fmtNum(e.posttest_score),
+          fmtNum(gain),
+          fmtNum(e.attendance_pct),
+          e.cert_eligible ? 'Yes' : 'No',
+          e.enrolled_at.toISOString(),
+        ].map(escapeCsv).join(',')
+      })
+      const csv = '﻿' + [headers.join(','), ...rows].join('\r\n') + '\r\n'
+
+      const safeName = (program?.code || 'program').replace(/[^a-zA-Z0-9-]/g, '-')
+      const dateStr = new Date().toISOString().slice(0, 10)
+      const filename = `progress-${safeName}-${dateStr}.csv`
+
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+      res.send(csv)
     } catch (err) {
       next(err)
     }
