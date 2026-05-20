@@ -142,6 +142,7 @@ router.post(
           trainerId: z.string().optional(),
           sessionType: z.enum(['LECTURE', 'DRILL', 'EXAM']).nullable().optional(),
           durationMin: z.number().int().min(5).max(1440).nullable().optional(),
+          capacity: z.number().int().min(1).max(10000).nullable().optional(),
           recurrence: z
             .object({
               frequency: z.enum(['DAILY', 'WEEKLY']),
@@ -216,6 +217,7 @@ router.post(
               geo_radius_m: data.geoRadiusM,
               session_type: data.sessionType,
               duration_min: data.durationMin,
+              capacity: data.capacity,
               series_id: seriesId,
             },
           })
@@ -260,6 +262,7 @@ router.put(
           trainerId: z.string().optional(),
           sessionType: z.enum(['LECTURE', 'DRILL', 'EXAM']).nullable().optional(),
           durationMin: z.number().int().min(5).max(1440).nullable().optional(),
+          capacity: z.number().int().min(1).max(10000).nullable().optional(),
         })
         .parse(req.body)
 
@@ -309,6 +312,7 @@ router.put(
           ...(data.trainerId !== undefined && { trainer_id: data.trainerId }),
           ...(data.sessionType !== undefined && { session_type: data.sessionType }),
           ...(data.durationMin !== undefined && { duration_min: data.durationMin }),
+          ...(data.capacity !== undefined && { capacity: data.capacity }),
         },
       })
       res.json({ ...session, warnings })
@@ -461,5 +465,71 @@ router.get(
     }
   }
 )
+
+// GET /api/v1/sessions/:id/rsvp — RSVP summary + the caller's own status
+router.get('/:id/rsvp', verifyJWT, async (req, res, next) => {
+  try {
+    const session = await prisma.session.findUnique({ where: { id: req.params.id } })
+    if (!session) return res.status(404).json({ error: 'Session not found' })
+    if (
+      req.user.role !== 'SUPER_ADMIN' &&
+      !req.user.programIds.includes(session.program_id)
+    ) {
+      return res.status(403).json({ error: 'No access to this session' })
+    }
+
+    const going = await prisma.sessionRSVP.count({
+      where: { session_id: session.id, status: 'GOING' },
+    })
+    const mine = await prisma.sessionRSVP.findUnique({
+      where: { session_id_user_id: { session_id: session.id, user_id: req.user.id } },
+    })
+    res.json({ capacity: session.capacity, going, myStatus: mine ? mine.status : null })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// POST /api/v1/sessions/:id/rsvp — participant sets their own RSVP
+router.post('/:id/rsvp', verifyJWT, async (req, res, next) => {
+  try {
+    const { status } = z
+      .object({ status: z.enum(['GOING', 'NOT_GOING']) })
+      .parse(req.body)
+
+    const session = await prisma.session.findUnique({ where: { id: req.params.id } })
+    if (!session) return res.status(404).json({ error: 'Session not found' })
+    if (
+      req.user.role !== 'SUPER_ADMIN' &&
+      !req.user.programIds.includes(session.program_id)
+    ) {
+      return res.status(403).json({ error: 'No access to this session' })
+    }
+
+    // Capacity check — only blocks a new GOING once the session is full.
+    if (status === 'GOING' && session.capacity != null) {
+      const existing = await prisma.sessionRSVP.findUnique({
+        where: { session_id_user_id: { session_id: session.id, user_id: req.user.id } },
+      })
+      if (!existing || existing.status !== 'GOING') {
+        const going = await prisma.sessionRSVP.count({
+          where: { session_id: session.id, status: 'GOING' },
+        })
+        if (going >= session.capacity) {
+          return res.status(400).json({ error: 'Kuota sesi sudah penuh' })
+        }
+      }
+    }
+
+    const rsvp = await prisma.sessionRSVP.upsert({
+      where: { session_id_user_id: { session_id: session.id, user_id: req.user.id } },
+      update: { status },
+      create: { session_id: session.id, user_id: req.user.id, status },
+    })
+    res.json(rsvp)
+  } catch (err) {
+    next(err)
+  }
+})
 
 module.exports = router

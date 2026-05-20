@@ -75,6 +75,12 @@ enum SessionType {
   EXAM
 }
 
+// Participant's intent to attend a session.
+enum RSVPStatus {
+  GOING
+  NOT_GOING
+}
+
 // ─── Users & Auth ─────────────────────────────────────────────────────────────
 
 model User {
@@ -500,6 +506,7 @@ model Session {
   duration_min Int?
   reminder_sent_at DateTime?
   series_id    String?
+  capacity     Int?
   is_active    Boolean  @default(false)
   created_at   DateTime @default(now())
 
@@ -507,8 +514,23 @@ model Session {
   trainer    User        @relation("TrainerSessions", fields: [trainer_id], references: [id])
   qr_tokens  QRToken[]
   attendances Attendance[]
+  rsvps      SessionRSVP[]
 
   @@map("sessions")
+}
+
+model SessionRSVP {
+  id         String     @id @default(cuid())
+  session_id String
+  user_id    String
+  status     RSVPStatus
+  created_at DateTime   @default(now())
+  updated_at DateTime   @updatedAt
+
+  session Session @relation(fields: [session_id], references: [id], onDelete: Cascade)
+
+  @@unique([session_id, user_id])
+  @@map("session_rsvps")
 }
 
 model QRToken {
