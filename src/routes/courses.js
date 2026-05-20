@@ -3,8 +3,27 @@ const { z } = require('zod')
 const prisma = require('../lib/prisma')
 const { verifyJWT, requireRole } = require('../middleware/auth')
 const { programIsolation } = require('../middleware/programIsolation')
+const { getProgramProgress } = require('../services/enrollment.service')
 
 const router = express.Router()
+
+// GET /api/v1/courses/programs/:pid/my-progress — current user's lesson completion (FR-10.2)
+router.get(
+  '/programs/:pid/my-progress',
+  verifyJWT,
+  programIsolation,
+  async (req, res, next) => {
+    try {
+      const progress = await getProgramProgress({
+        userId: req.user.id,
+        programId: req.programId,
+      })
+      res.json(progress)
+    } catch (err) {
+      next(err)
+    }
+  }
+)
 
 // GET /api/v1/courses/programs/:pid — list courses in a program.
 // Participants only see PUBLISHED courses; trainer/admin see all unless

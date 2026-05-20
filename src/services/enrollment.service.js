@@ -51,9 +51,25 @@ async function isProgramLearningComplete({ userId, programId }) {
   return completedCount >= totalLessons
 }
 
+/**
+ * Returns the user's lesson-completion progress across an entire program.
+ * Used by the participant dashboard (FR-10.2).
+ */
+async function getProgramProgress({ userId, programId }) {
+  const totalLessons = await prisma.lesson.count({
+    where: { module: { course: { program_id: programId } } },
+  })
+  const completedLessons = await prisma.lessonProgress.count({
+    where: { user_id: userId, program_id: programId, completed: true },
+  })
+  const pct = totalLessons > 0 ? (completedLessons / totalLessons) * 100 : 0
+  return { totalLessons, completedLessons, pct }
+}
+
 module.exports = {
   ATTENDANCE_THRESHOLD,
   POSTTEST_THRESHOLD,
   recomputeAttendancePct,
   isProgramLearningComplete,
+  getProgramProgress,
 }
