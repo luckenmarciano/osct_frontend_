@@ -94,6 +94,34 @@ router.get(
   }
 )
 
+// GET /api/v1/sessions/:id — single session detail
+router.get(
+  '/:id',
+  verifyJWT,
+  requireRole('TRAINER', 'PROGRAM_ADMIN', 'SUPER_ADMIN'),
+  async (req, res, next) => {
+    try {
+      const session = await prisma.session.findUnique({
+        where: { id: req.params.id },
+        include: {
+          trainer: { select: { id: true, full_name: true, email: true } },
+          _count: { select: { attendances: true } },
+        },
+      })
+      if (!session) return res.status(404).json({ error: 'Session not found' })
+      if (
+        req.user.role !== 'SUPER_ADMIN' &&
+        !req.user.programIds.includes(session.program_id)
+      ) {
+        return res.status(403).json({ error: 'No access to this session' })
+      }
+      res.json(session)
+    } catch (err) {
+      next(err)
+    }
+  }
+)
+
 // POST /api/v1/sessions — trainer creates session
 router.post(
   '/',
