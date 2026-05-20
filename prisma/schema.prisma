@@ -499,6 +499,7 @@ model Session {
   session_type SessionType?
   duration_min Int?
   reminder_sent_at DateTime?
+  series_id    String?
   is_active    Boolean  @default(false)
   created_at   DateTime @default(now())
 

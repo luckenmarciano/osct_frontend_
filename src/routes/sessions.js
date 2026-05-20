@@ -1,5 +1,6 @@
 const express = require('express')
 const { z } = require('zod')
+const crypto = require('crypto')
 const prisma = require('../lib/prisma')
 const { verifyJWT, requireRole } = require('../middleware/auth')
 const { programIsolation } = require('../middleware/programIsolation')
@@ -141,6 +142,12 @@ router.post(
           trainerId: z.string().optional(),
           sessionType: z.enum(['LECTURE', 'DRILL', 'EXAM']).nullable().optional(),
           durationMin: z.number().int().min(5).max(1440).nullable().optional(),
+          recurrence: z
+            .object({
+              frequency: z.enum(['DAILY', 'WEEKLY']),
+              count: z.number().int().min(2).max(52),
+            })
+            .optional(),
         })
         .parse(req.body)
 
@@ -169,29 +176,66 @@ router.post(
         trainerId = data.trainerId
       }
 
-      const warnings = await findSessionConflicts({
-        programId: data.programId,
-        trainerId,
-        location: data.location,
-        scheduledAt: data.scheduledAt,
-        durationMin: data.durationMin,
+      // Build the occurrence dates. A recurrence spec turns one session into a
+      // dated series sharing a series_id; otherwise it's a single occurrence.
+      const occurrences = [new Date(data.scheduledAt)]
+      let seriesId = null
+      if (data.recurrence) {
+        seriesId = crypto.randomUUID()
+        occurrences.length = 0
+        const stepDays = data.recurrence.frequency === 'DAILY' ? 1 : 7
+        for (let i = 0; i < data.recurrence.count; i++) {
+          const dt = new Date(data.scheduledAt)
+          dt.setDate(dt.getDate() + i * stepDays)
+          occurrences.push(dt)
+        }
+      }
+
+      const created = []
+      const allWarnings = []
+      for (const occ of occurrences) {
+        allWarnings.push(
+          ...(await findSessionConflicts({
+            programId: data.programId,
+            trainerId,
+            location: data.location,
+            scheduledAt: occ,
+            durationMin: data.durationMin,
+          }))
+        )
+        created.push(
+          await prisma.session.create({
+            data: {
+              program_id: data.programId,
+              trainer_id: trainerId,
+              title: data.title,
+              scheduled_at: occ,
+              location: data.location,
+              location_lat: data.locationLat,
+              location_lng: data.locationLng,
+              geo_radius_m: data.geoRadiusM,
+              session_type: data.sessionType,
+              duration_min: data.durationMin,
+              series_id: seriesId,
+            },
+          })
+        )
+      }
+
+      // Dedupe conflict warnings across occurrences.
+      const seen = new Set()
+      const warnings = allWarnings.filter((w) => {
+        const k = `${w.type}|${w.sessionTitle}`
+        if (seen.has(k)) return false
+        seen.add(k)
+        return true
       })
 
-      const session = await prisma.session.create({
-        data: {
-          program_id: data.programId,
-          trainer_id: trainerId,
-          title: data.title,
-          scheduled_at: data.scheduledAt,
-          location: data.location,
-          location_lat: data.locationLat,
-          location_lng: data.locationLng,
-          geo_radius_m: data.geoRadiusM,
-          session_type: data.sessionType,
-          duration_min: data.durationMin,
-        },
+      res.status(201).json({
+        ...created[0],
+        warnings,
+        seriesCount: created.length,
       })
-      res.status(201).json({ ...session, warnings })
     } catch (err) {
       next(err)
     }
@@ -289,6 +333,14 @@ router.delete(
         !req.user.programIds.includes(existing.program_id)
       ) {
         return res.status(403).json({ error: 'No access to this session' })
+      }
+
+      // ?series=true removes every session sharing this one's series_id.
+      if (req.query.series === 'true' && existing.series_id) {
+        const result = await prisma.session.deleteMany({
+          where: { series_id: existing.series_id },
+        })
+        return res.json({ deleted: result.count })
       }
 
       await prisma.session.delete({ where: { id: req.params.id } })
