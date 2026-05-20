@@ -206,10 +206,12 @@ model ProgramEnrollment {
 }
 
 model ProgramTrainer {
-  id         String   @id @default(cuid())
-  user_id    String
-  program_id String
-  assigned_at DateTime @default(now())
+  id          String    @id @default(cuid())
+  user_id     String
+  program_id  String
+  assigned_at DateTime  @default(now())
+  // null = trainer has not yet seen the in-app assignment banner
+  acknowledged_at DateTime?
 
   user    User        @relation(fields: [user_id], references: [id], onDelete: Cascade)
   program OPRCProgram @relation(fields: [program_id], references: [id], onDelete: Cascade)
