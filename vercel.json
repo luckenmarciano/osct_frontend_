@@ -9,5 +9,8 @@
   },
   "rewrites": [
     { "source": "/(.*)", "destination": "/api/index.js" }
+  ],
+  "crons": [
+    { "path": "/api/v1/emails/cron/session-reminders", "schedule": "0 1 * * *" }
   ]
 }

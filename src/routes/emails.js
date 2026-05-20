@@ -1,6 +1,7 @@
 const express = require('express')
 const { z } = require('zod')
 const prisma = require('../lib/prisma')
+const env = require('../config/env')
 const { verifyJWT, requireRole } = require('../middleware/auth')
 const { programIsolation } = require('../middleware/programIsolation')
 const {
@@ -187,6 +188,56 @@ router.post(
     }
   }
 )
+
+// ─── GET /emails/cron/session-reminders ─────────────────────────────────────
+// Hit by Vercel Cron (see vercel.json). Emails a reminder for every session
+// scheduled within the next 24h that has not been reminded yet, then stamps
+// reminder_sent_at so the next run skips it. Authenticated by CRON_SECRET, not
+// a JWT — rejects everything when CRON_SECRET is unset (fail closed).
+router.get('/cron/session-reminders', async (req, res, next) => {
+  try {
+    if (!env.CRON_SECRET || req.headers.authorization !== `Bearer ${env.CRON_SECRET}`) {
+      return res.status(401).json({ error: 'Unauthorized' })
+    }
+
+    const now = new Date()
+    const in24h = new Date(now.getTime() + 24 * 60 * 60 * 1000)
+    const sessions = await prisma.session.findMany({
+      where: {
+        scheduled_at: { gte: now, lte: in24h },
+        reminder_sent_at: null,
+      },
+      include: {
+        trainer: { select: { full_name: true } },
+        program: { select: { name: true } },
+      },
+    })
+
+    let totalSent = 0
+    let totalFailed = 0
+    for (const session of sessions) {
+      const recipients = await getProgramRecipients(session.program_id, {})
+      if (recipients.length > 0) {
+        const results = await sendSessionReminderEmail({
+          recipients,
+          session,
+          programName: session.program?.name,
+          sentById: null,
+        })
+        totalSent += results.filter((r) => r.sent || r.mocked).length
+        totalFailed += results.filter((r) => r.failed).length
+      }
+      await prisma.session.update({
+        where: { id: session.id },
+        data: { reminder_sent_at: new Date() },
+      })
+    }
+
+    res.json({ sessionsProcessed: sessions.length, totalSent, totalFailed })
+  } catch (err) {
+    next(err)
+  }
+})
 
 // ─── GET /emails/programs/:pid/logs ─────────────────────────────────────────
 router.get(

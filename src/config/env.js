@@ -20,6 +20,11 @@ const schema = z.object({
   RESEND_API_KEY: z.string().optional().transform((v) => (v?.trim() ? v.trim() : undefined)),
   EMAIL_FROM: z.string().default('OSCT Platform <noreply@example.com>'),
 
+  // Shared secret for the Vercel Cron session-reminder endpoint. When set,
+  // Vercel Cron sends it as a Bearer token; the endpoint rejects requests
+  // that don't match (and rejects everything when the secret is unset).
+  CRON_SECRET: z.string().optional().transform((v) => (v?.trim() ? v.trim() : undefined)),
+
   PORT: z.coerce.number().default(4000),
   // Comma-separated list of allowed frontend origins (no trailing slash).
   // Override per-environment in Vercel project settings.
