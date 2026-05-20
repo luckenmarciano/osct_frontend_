@@ -2,6 +2,11 @@ const express = require('express')
 const prisma = require('../lib/prisma')
 const { verifyJWT, requireRole } = require('../middleware/auth')
 const { programIsolation } = require('../middleware/programIsolation')
+const {
+  htmlToPdfBuffer,
+  buildProgressReportHTML,
+  buildCoursesProgressReportHTML,
+} = require('../services/report.service')
 
 const router = express.Router()
 
@@ -17,6 +22,93 @@ function fmtNum(n) {
   return Number.isFinite(n) ? Number(n).toFixed(2) : ''
 }
 
+// ─── Shared data builders ───────────────────────────────────────────────────
+
+// Per-participant progress rows for a program.
+async function computeProgressRows(programId) {
+  const enrollments = await prisma.programEnrollment.findMany({
+    where: { program_id: programId },
+    include: { user: { select: { id: true, full_name: true, email: true } } },
+    orderBy: { enrolled_at: 'asc' },
+  })
+  return enrollments.map((e) => ({
+    userId: e.user.id,
+    name: e.user.full_name,
+    email: e.user.email,
+    pretest: e.pretest_score,
+    posttest: e.posttest_score,
+    gain:
+      e.posttest_score != null && e.pretest_score != null
+        ? e.posttest_score - e.pretest_score
+        : null,
+    attendance: e.attendance_pct,
+    certEligible: e.cert_eligible,
+  }))
+}
+
+// Per-course completion recap with per-participant breakdown.
+async function computeCoursesProgress(programId) {
+  const [courses, enrollments, progress] = await Promise.all([
+    prisma.course.findMany({
+      where: { program_id: programId },
+      include: { modules: { include: { lessons: { select: { id: true } } } } },
+      orderBy: { order_index: 'asc' },
+    }),
+    prisma.programEnrollment.findMany({
+      where: { program_id: programId },
+      include: { user: { select: { id: true, full_name: true, email: true } } },
+      orderBy: { enrolled_at: 'asc' },
+    }),
+    prisma.lessonProgress.findMany({
+      where: { program_id: programId, completed: true },
+      select: { user_id: true, lesson_id: true },
+    }),
+  ])
+
+  const completedByUser = new Map()
+  for (const p of progress) {
+    if (!completedByUser.has(p.user_id)) completedByUser.set(p.user_id, new Set())
+    completedByUser.get(p.user_id).add(p.lesson_id)
+  }
+
+  return courses.map((course) => {
+    const lessonIds = course.modules.flatMap((m) => m.lessons.map((l) => l.id))
+    const lessonCount = lessonIds.length
+
+    const participants = enrollments.map((e) => {
+      const done = completedByUser.get(e.user.id) || new Set()
+      const completedLessons = lessonIds.filter((id) => done.has(id)).length
+      const completionPct = lessonCount > 0 ? (completedLessons / lessonCount) * 100 : 0
+      return {
+        userId: e.user.id,
+        name: e.user.full_name,
+        email: e.user.email,
+        completedLessons,
+        completionPct: Number(completionPct.toFixed(1)),
+        posttestScore: e.posttest_score,
+      }
+    })
+
+    const avgCompletionPct = participants.length
+      ? Number(
+          (
+            participants.reduce((s, p) => s + p.completionPct, 0) / participants.length
+          ).toFixed(1)
+        )
+      : 0
+
+    return {
+      courseId: course.id,
+      title: course.title,
+      status: course.status,
+      lessonCount,
+      totalParticipants: participants.length,
+      avgCompletionPct,
+      participants,
+    }
+  })
+}
+
 // GET /api/v1/reports/programs/:pid/progress — participants progress
 router.get(
   '/programs/:pid/progress',
@@ -25,26 +117,7 @@ router.get(
   programIsolation,
   async (req, res, next) => {
     try {
-      const enrollments = await prisma.programEnrollment.findMany({
-        where: { program_id: req.programId },
-        include: {
-          user: { select: { id: true, full_name: true, email: true } },
-        },
-      })
-
-      const data = enrollments.map((e) => ({
-        userId: e.user.id,
-        name: e.user.full_name,
-        email: e.user.email,
-        pretest: e.pretest_score,
-        posttest: e.posttest_score,
-        gain:
-          e.posttest_score != null && e.pretest_score != null
-            ? e.posttest_score - e.pretest_score
-            : null,
-        attendance: e.attendance_pct,
-        certEligible: e.cert_eligible,
-      }))
+      const data = await computeProgressRows(req.programId)
       res.json(data)
     } catch (err) {
       next(err)
@@ -279,69 +352,7 @@ router.get(
   programIsolation,
   async (req, res, next) => {
     try {
-      const [courses, enrollments, progress] = await Promise.all([
-        prisma.course.findMany({
-          where: { program_id: req.programId },
-          include: { modules: { include: { lessons: { select: { id: true } } } } },
-          orderBy: { order_index: 'asc' },
-        }),
-        prisma.programEnrollment.findMany({
-          where: { program_id: req.programId },
-          include: { user: { select: { id: true, full_name: true, email: true } } },
-          orderBy: { enrolled_at: 'asc' },
-        }),
-        prisma.lessonProgress.findMany({
-          where: { program_id: req.programId, completed: true },
-          select: { user_id: true, lesson_id: true },
-        }),
-      ])
-
-      // user_id → Set of completed lesson ids
-      const completedByUser = new Map()
-      for (const p of progress) {
-        if (!completedByUser.has(p.user_id)) completedByUser.set(p.user_id, new Set())
-        completedByUser.get(p.user_id).add(p.lesson_id)
-      }
-
-      const result = courses.map((course) => {
-        const lessonIds = course.modules.flatMap((m) => m.lessons.map((l) => l.id))
-        const lessonCount = lessonIds.length
-
-        const participants = enrollments.map((e) => {
-          const done = completedByUser.get(e.user.id) || new Set()
-          const completedLessons = lessonIds.filter((id) => done.has(id)).length
-          const completionPct =
-            lessonCount > 0 ? (completedLessons / lessonCount) * 100 : 0
-          return {
-            userId: e.user.id,
-            name: e.user.full_name,
-            email: e.user.email,
-            completedLessons,
-            completionPct: Number(completionPct.toFixed(1)),
-            posttestScore: e.posttest_score,
-          }
-        })
-
-        const avgCompletionPct = participants.length
-          ? Number(
-              (
-                participants.reduce((s, p) => s + p.completionPct, 0) /
-                participants.length
-              ).toFixed(1)
-            )
-          : 0
-
-        return {
-          courseId: course.id,
-          title: course.title,
-          status: course.status,
-          lessonCount,
-          totalParticipants: participants.length,
-          avgCompletionPct,
-          participants,
-        }
-      })
-
+      const result = await computeCoursesProgress(req.programId)
       res.json(result)
     } catch (err) {
       next(err)
@@ -388,6 +399,131 @@ router.get(
         avgAttendance: Number(avgAttendance.toFixed(2)),
       })
     } catch (err) {
+      next(err)
+    }
+  }
+)
+
+// ─── Export endpoints (CSV + PDF) ───────────────────────────────────────────
+
+function reportFilename(program, base, ext) {
+  const safe = (program?.code || 'program').replace(/[^a-zA-Z0-9-]/g, '-')
+  const dateStr = new Date().toISOString().slice(0, 10)
+  return `${base}-${safe}-${dateStr}.${ext}`
+}
+
+// GET /api/v1/reports/programs/:pid/courses-progress.csv
+router.get(
+  '/programs/:pid/courses-progress.csv',
+  verifyJWT,
+  requireRole('SUPER_ADMIN', 'PROGRAM_ADMIN', 'TRAINER'),
+  programIsolation,
+  async (req, res, next) => {
+    try {
+      const [program, courses] = await Promise.all([
+        prisma.oPRCProgram.findUnique({ where: { id: req.programId } }),
+        computeCoursesProgress(req.programId),
+      ])
+
+      const headers = [
+        'Course', 'Status', 'Jumlah Pelajaran', 'Peserta',
+        'Modul Selesai', '% Selesai', 'Posttest',
+      ]
+      const lines = [headers.join(',')]
+      for (const c of courses) {
+        if (c.participants.length === 0) {
+          lines.push([c.title, c.status, c.lessonCount, 0, '', '', ''].map(escapeCsv).join(','))
+          continue
+        }
+        for (const p of c.participants) {
+          lines.push(
+            [
+              c.title,
+              c.status,
+              c.lessonCount,
+              p.name,
+              p.completedLessons,
+              fmtNum(p.completionPct),
+              fmtNum(p.posttestScore),
+            ].map(escapeCsv).join(',')
+          )
+        }
+      }
+      const csv = '﻿' + lines.join('\r\n') + '\r\n'
+
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${reportFilename(program, 'courses-progress', 'csv')}"`
+      )
+      res.send(csv)
+    } catch (err) {
+      next(err)
+    }
+  }
+)
+
+// GET /api/v1/reports/programs/:pid/progress.pdf
+router.get(
+  '/programs/:pid/progress.pdf',
+  verifyJWT,
+  requireRole('SUPER_ADMIN', 'PROGRAM_ADMIN', 'TRAINER'),
+  programIsolation,
+  async (req, res, next) => {
+    try {
+      const [program, rows] = await Promise.all([
+        prisma.oPRCProgram.findUnique({ where: { id: req.programId } }),
+        computeProgressRows(req.programId),
+      ])
+      const html = buildProgressReportHTML({
+        program,
+        rows,
+        generatedAt: new Date().toLocaleString('id-ID'),
+      })
+      const pdf = await htmlToPdfBuffer(html)
+      res.setHeader('Content-Type', 'application/pdf')
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${reportFilename(program, 'progress', 'pdf')}"`
+      )
+      res.send(pdf)
+    } catch (err) {
+      if (/puppeteer/i.test(err.message || '')) {
+        return res.status(503).json({ error: 'PDF generation tidak tersedia' })
+      }
+      next(err)
+    }
+  }
+)
+
+// GET /api/v1/reports/programs/:pid/courses-progress.pdf
+router.get(
+  '/programs/:pid/courses-progress.pdf',
+  verifyJWT,
+  requireRole('SUPER_ADMIN', 'PROGRAM_ADMIN', 'TRAINER'),
+  programIsolation,
+  async (req, res, next) => {
+    try {
+      const [program, courses] = await Promise.all([
+        prisma.oPRCProgram.findUnique({ where: { id: req.programId } }),
+        computeCoursesProgress(req.programId),
+      ])
+      const html = buildCoursesProgressReportHTML({
+        program,
+        courses,
+        generatedAt: new Date().toLocaleString('id-ID'),
+      })
+      const pdf = await htmlToPdfBuffer(html)
+      res.setHeader('Content-Type', 'application/pdf')
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${reportFilename(program, 'courses-progress', 'pdf')}"`
+      )
+      res.send(pdf)
+    } catch (err) {
+      if (/puppeteer/i.test(err.message || '')) {
+        return res.status(503).json({ error: 'PDF generation tidak tersedia' })
+      }
       next(err)
     }
   }
