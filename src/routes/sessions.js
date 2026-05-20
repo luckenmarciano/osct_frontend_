@@ -16,7 +16,10 @@ router.get(
     try {
       const sessions = await prisma.session.findMany({
         where: { program_id: req.programId },
-        include: { trainer: { select: { id: true, full_name: true, email: true } } },
+        include: {
+          trainer: { select: { id: true, full_name: true, email: true } },
+          _count: { select: { attendances: true } },
+        },
         orderBy: { scheduled_at: 'asc' },
       })
       res.json(sessions)
@@ -62,9 +65,9 @@ router.post(
           title: z.string().min(1),
           scheduledAt: z.coerce.date(),
           location: z.string().optional(),
-          locationLat: z.number().min(-90).max(90).optional(),
-          locationLng: z.number().min(-180).max(180).optional(),
-          geoRadiusM: z.number().int().min(10).max(50000).optional(),
+          locationLat: z.number().min(-90).max(90).nullable().optional(),
+          locationLng: z.number().min(-180).max(180).nullable().optional(),
+          geoRadiusM: z.number().int().min(10).max(50000).nullable().optional(),
         })
         .parse(req.body)
 
@@ -106,6 +109,9 @@ router.put(
           title: z.string().min(1).optional(),
           scheduledAt: z.coerce.date().optional(),
           location: z.string().nullable().optional(),
+          locationLat: z.number().min(-90).max(90).nullable().optional(),
+          locationLng: z.number().min(-180).max(180).nullable().optional(),
+          geoRadiusM: z.number().int().min(10).max(50000).nullable().optional(),
         })
         .parse(req.body)
 
@@ -125,6 +131,9 @@ router.put(
           ...(data.title !== undefined && { title: data.title }),
           ...(data.scheduledAt !== undefined && { scheduled_at: data.scheduledAt }),
           ...(data.location !== undefined && { location: data.location }),
+          ...(data.locationLat !== undefined && { location_lat: data.locationLat }),
+          ...(data.locationLng !== undefined && { location_lng: data.locationLng }),
+          ...(data.geoRadiusM !== undefined && { geo_radius_m: data.geoRadiusM }),
         },
       })
       res.json(session)
@@ -193,6 +202,27 @@ router.post(
       })
       const { token, qrPngDataUrl, expiresAt } = await rotateSessionToken(session.id)
       res.json({ sessionId: session.id, token, qrPngDataUrl, expiresAt })
+    } catch (err) {
+      next(err)
+    }
+  }
+)
+
+// POST /api/v1/sessions/:id/qr/stop — end an active session
+router.post(
+  '/:id/qr/stop',
+  verifyJWT,
+  requireRole('TRAINER', 'PROGRAM_ADMIN', 'SUPER_ADMIN'),
+  async (req, res, next) => {
+    try {
+      const session = await loadSessionWithAccess(req, res)
+      if (!session) return
+
+      const updated = await prisma.session.update({
+        where: { id: session.id },
+        data: { is_active: false },
+      })
+      res.json({ sessionId: updated.id, is_active: updated.is_active })
     } catch (err) {
       next(err)
     }
