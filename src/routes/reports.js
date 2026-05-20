@@ -271,6 +271,84 @@ router.get(
   }
 )
 
+// GET /api/v1/reports/programs/:pid/courses-progress — per-course completion recap (FR-10.3)
+router.get(
+  '/programs/:pid/courses-progress',
+  verifyJWT,
+  requireRole('SUPER_ADMIN', 'PROGRAM_ADMIN', 'TRAINER'),
+  programIsolation,
+  async (req, res, next) => {
+    try {
+      const [courses, enrollments, progress] = await Promise.all([
+        prisma.course.findMany({
+          where: { program_id: req.programId },
+          include: { modules: { include: { lessons: { select: { id: true } } } } },
+          orderBy: { order_index: 'asc' },
+        }),
+        prisma.programEnrollment.findMany({
+          where: { program_id: req.programId },
+          include: { user: { select: { id: true, full_name: true, email: true } } },
+          orderBy: { enrolled_at: 'asc' },
+        }),
+        prisma.lessonProgress.findMany({
+          where: { program_id: req.programId, completed: true },
+          select: { user_id: true, lesson_id: true },
+        }),
+      ])
+
+      // user_id → Set of completed lesson ids
+      const completedByUser = new Map()
+      for (const p of progress) {
+        if (!completedByUser.has(p.user_id)) completedByUser.set(p.user_id, new Set())
+        completedByUser.get(p.user_id).add(p.lesson_id)
+      }
+
+      const result = courses.map((course) => {
+        const lessonIds = course.modules.flatMap((m) => m.lessons.map((l) => l.id))
+        const lessonCount = lessonIds.length
+
+        const participants = enrollments.map((e) => {
+          const done = completedByUser.get(e.user.id) || new Set()
+          const completedLessons = lessonIds.filter((id) => done.has(id)).length
+          const completionPct =
+            lessonCount > 0 ? (completedLessons / lessonCount) * 100 : 0
+          return {
+            userId: e.user.id,
+            name: e.user.full_name,
+            email: e.user.email,
+            completedLessons,
+            completionPct: Number(completionPct.toFixed(1)),
+            posttestScore: e.posttest_score,
+          }
+        })
+
+        const avgCompletionPct = participants.length
+          ? Number(
+              (
+                participants.reduce((s, p) => s + p.completionPct, 0) /
+                participants.length
+              ).toFixed(1)
+            )
+          : 0
+
+        return {
+          courseId: course.id,
+          title: course.title,
+          status: course.status,
+          lessonCount,
+          totalParticipants: participants.length,
+          avgCompletionPct,
+          participants,
+        }
+      })
+
+      res.json(result)
+    } catch (err) {
+      next(err)
+    }
+  }
+)
+
 // GET /api/v1/reports/programs/:pid/analytics — aggregated stats
 router.get(
   '/programs/:pid/analytics',
