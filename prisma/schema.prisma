@@ -60,6 +60,14 @@ enum CourseStatus {
   ARCHIVED
 }
 
+// Delivery mode of a training batch: a company-sponsored cohort (INHOUSE)
+// or open mixed-company enrollment (PUBLIC). Recorded per participant at
+// batch-enroll time.
+enum TrainingMode {
+  INHOUSE
+  PUBLIC
+}
+
 // ─── Users & Auth ─────────────────────────────────────────────────────────────
 
 model User {
@@ -124,6 +132,7 @@ model ParticipantProfile {
   place_of_birth           String?
   date_of_birth            DateTime?
   training_type            String?
+  training_mode            TrainingMode?
   training_date            DateTime?
   nautical_cert_no         String?
   nautical_cert_expires_at DateTime?

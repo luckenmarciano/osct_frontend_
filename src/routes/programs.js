@@ -146,6 +146,8 @@ router.post(
           email: z.string().email(),
           fullName: z.string().min(1),
           password: z.string().min(6).optional(),
+          company: z.string().optional(),
+          trainingMode: z.enum(['INHOUSE', 'PUBLIC']).optional(),
           sendQrEmail: z.boolean().optional().default(false),
         })
         .parse(req.body)
@@ -178,6 +180,17 @@ router.post(
         include: {
           user: { select: { id: true, email: true, full_name: true } },
           certificate: true,
+        },
+      })
+
+      // Store company + training mode on the participant profile. The user is
+      // always brand new here (existing emails are rejected with 409 above),
+      // so a plain create is safe.
+      await prisma.participantProfile.create({
+        data: {
+          user_id: user.id,
+          client_company: data.company || null,
+          training_mode: data.trainingMode || null,
         },
       })
 
@@ -220,7 +233,12 @@ router.post(
         programId: req.programId,
         resourceType: 'enrollment',
         resourceId: enrollment.id,
-        metadata: { email: user.email, qrEmailed: !!data.sendQrEmail },
+        metadata: {
+          email: user.email,
+          qrEmailed: !!data.sendQrEmail,
+          trainingMode: data.trainingMode || null,
+          company: data.company || null,
+        },
         req,
       })
 
