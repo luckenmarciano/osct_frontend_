@@ -109,6 +109,285 @@ async function computeCoursesProgress(programId) {
   })
 }
 
+// ─── Platform analytics overview (cross-program) ────────────────────────────
+
+const RANGE_DAYS = { '7d': 7, '30d': 30, quarter: 90 }
+
+// Empty payload when the caller has no accessible programs — keeps the
+// timeline axis stable so the frontend never has to special-case length.
+function emptyOverview(rangeDays) {
+  const today = new Date()
+  const timeline = []
+  for (let i = rangeDays - 1; i >= 0; i--) {
+    const d = new Date(today)
+    d.setUTCDate(d.getUTCDate() - i)
+    timeline.push({ date: d.toISOString().slice(0, 10), watch: 0, quiz: 0 })
+  }
+  return {
+    range: { days: rangeDays },
+    programCount: 0,
+    stats: { watchHours: 0, completionRatePct: 0, dropOffRatePct: 0, participants: 0 },
+    heatmap: { moduleCount: 0, rows: [] },
+    dropOff: [],
+    byLevel: [],
+    timeline,
+  }
+}
+
+// Aggregate engagement / completion / drop-off across every program the
+// caller may see (SUPER_ADMIN → all; others → JWT programIds).
+async function computeAnalyticsOverview({ role, programIds, rangeDays }) {
+  const programWhere = role === 'SUPER_ADMIN' ? {} : { id: { in: programIds } }
+
+  const programs = await prisma.oPRCProgram.findMany({
+    where: programWhere,
+    select: { id: true, code: true, name: true, level: true },
+    orderBy: [{ level: 'asc' }, { created_at: 'asc' }],
+  })
+  const pids = programs.map((p) => p.id)
+  if (pids.length === 0) return emptyOverview(rangeDays)
+
+  const [courses, enrollments, lessonProgress, watchSessions, quizAttempts, testAttempts] =
+    await Promise.all([
+      prisma.course.findMany({
+        where: { program_id: { in: pids } },
+        select: {
+          id: true,
+          program_id: true,
+          order_index: true,
+          modules: {
+            select: {
+              id: true,
+              title: true,
+              order_index: true,
+              lessons: {
+                select: {
+                  id: true,
+                  title: true,
+                  video: { select: { id: true, duration_sec: true } },
+                },
+              },
+            },
+            orderBy: { order_index: 'asc' },
+          },
+        },
+        orderBy: { order_index: 'asc' },
+      }),
+      prisma.programEnrollment.findMany({
+        where: { program_id: { in: pids } },
+        select: { program_id: true, user_id: true },
+      }),
+      prisma.lessonProgress.findMany({
+        where: { program_id: { in: pids }, completed: true },
+        select: { program_id: true },
+      }),
+      prisma.videoWatchSession.findMany({
+        where: { program_id: { in: pids } },
+        select: {
+          video_id: true,
+          watch_pct: true,
+          completed: true,
+          last_watched_at: true,
+        },
+      }),
+      prisma.quizAttempt.findMany({
+        where: { program_id: { in: pids }, submitted_at: { not: null } },
+        select: { submitted_at: true },
+      }),
+      prisma.testAttempt.findMany({
+        where: { program_id: { in: pids }, submitted_at: { not: null } },
+        select: { submitted_at: true },
+      }),
+    ])
+
+  // ── Structure maps ────────────────────────────────────────────────────────
+  const videoMeta = new Map() // video_id → { durationSec, moduleId/Title, lessonId/Title }
+  const modulesByProgram = new Map() // program_id → ordered [{ id, title, videoIds }]
+  const lessonCountByProgram = new Map() // program_id → total lesson count
+  const programLevel = new Map(programs.map((p) => [p.id, p.level]))
+  for (const p of programs) {
+    modulesByProgram.set(p.id, [])
+    lessonCountByProgram.set(p.id, 0)
+  }
+
+  const coursesByProgram = new Map()
+  for (const c of courses) {
+    if (!coursesByProgram.has(c.program_id)) coursesByProgram.set(c.program_id, [])
+    coursesByProgram.get(c.program_id).push(c)
+  }
+  for (const [pid, cs] of coursesByProgram) {
+    cs.sort((a, b) => a.order_index - b.order_index)
+    const moduleList = []
+    let lessonTotal = 0
+    for (const c of cs) {
+      const mods = [...c.modules].sort((a, b) => a.order_index - b.order_index)
+      for (const m of mods) {
+        const videoIds = []
+        for (const l of m.lessons) {
+          lessonTotal += 1
+          if (l.video) {
+            videoIds.push(l.video.id)
+            videoMeta.set(l.video.id, {
+              durationSec: l.video.duration_sec || 0,
+              moduleId: m.id,
+              moduleTitle: m.title,
+              lessonId: l.id,
+              lessonTitle: l.title,
+            })
+          }
+        }
+        moduleList.push({ id: m.id, title: m.title, videoIds })
+      }
+    }
+    modulesByProgram.set(pid, moduleList)
+    lessonCountByProgram.set(pid, lessonTotal)
+  }
+
+  // ── Stats: watch-time, completion, drop-off, participants ─────────────────
+  const STARTED_PCT = 5
+  const FINISHED_PCT = 90
+
+  let watchSeconds = 0
+  let totalStarted = 0
+  let totalDropped = 0
+  const dropByVideo = new Map() // video_id → { started, dropped }
+  const watchByModule = new Map() // module_id → { sum, count } of watch_pct
+
+  for (const w of watchSessions) {
+    const meta = videoMeta.get(w.video_id)
+    if (!meta) continue
+    watchSeconds += (w.watch_pct / 100) * meta.durationSec
+
+    let mod = watchByModule.get(meta.moduleId)
+    if (!mod) {
+      mod = { sum: 0, count: 0 }
+      watchByModule.set(meta.moduleId, mod)
+    }
+    mod.sum += w.watch_pct
+    mod.count += 1
+
+    if (w.watch_pct >= STARTED_PCT) {
+      const finished = w.completed || w.watch_pct >= FINISHED_PCT
+      totalStarted += 1
+      if (!finished) totalDropped += 1
+      let agg = dropByVideo.get(w.video_id)
+      if (!agg) {
+        agg = { started: 0, dropped: 0 }
+        dropByVideo.set(w.video_id, agg)
+      }
+      agg.started += 1
+      if (!finished) agg.dropped += 1
+    }
+  }
+
+  let possibleLessons = 0
+  const participantSet = new Set()
+  for (const e of enrollments) {
+    possibleLessons += lessonCountByProgram.get(e.program_id) || 0
+    participantSet.add(e.user_id)
+  }
+
+  const stats = {
+    watchHours: Number((watchSeconds / 3600).toFixed(1)),
+    completionRatePct:
+      possibleLessons > 0
+        ? Number(((lessonProgress.length / possibleLessons) * 100).toFixed(1))
+        : 0,
+    dropOffRatePct:
+      totalStarted > 0 ? Number(((totalDropped / totalStarted) * 100).toFixed(1)) : 0,
+    participants: participantSet.size,
+  }
+
+  // ── Drop-off list: video lessons ranked by drop-off rate ──────────────────
+  const dropOff = []
+  for (const [videoId, agg] of dropByVideo) {
+    const meta = videoMeta.get(videoId)
+    if (!meta || agg.started === 0) continue
+    dropOff.push({
+      lessonId: meta.lessonId,
+      title: meta.lessonTitle,
+      moduleTitle: meta.moduleTitle,
+      startedCount: agg.started,
+      dropOffPct: Number(((agg.dropped / agg.started) * 100).toFixed(1)),
+    })
+  }
+  dropOff.sort(
+    (a, b) => b.dropOffPct - a.dropOffPct || b.startedCount - a.startedCount
+  )
+
+  // ── Heatmap: programs × module ordinal, cell = avg watch_pct ──────────────
+  let moduleCount = 0
+  const heatmapRows = programs.map((p) => {
+    const mods = modulesByProgram.get(p.id) || []
+    moduleCount = Math.max(moduleCount, mods.length)
+    const cells = mods.map((m) => {
+      const agg = watchByModule.get(m.id)
+      if (!agg || agg.count === 0) return null
+      return Number((agg.sum / agg.count).toFixed(0))
+    })
+    return { programId: p.id, code: p.code, name: p.name, level: p.level, cells }
+  })
+
+  // ── Progress by OPRC level ────────────────────────────────────────────────
+  const levelAgg = new Map() // level → { participants:Set, possible, completed }
+  const levelBucket = (lvl) => {
+    if (!levelAgg.has(lvl)) {
+      levelAgg.set(lvl, { participants: new Set(), possible: 0, completed: 0 })
+    }
+    return levelAgg.get(lvl)
+  }
+  for (const p of programs) levelBucket(p.level)
+  for (const e of enrollments) {
+    const b = levelBucket(programLevel.get(e.program_id))
+    b.participants.add(e.user_id)
+    b.possible += lessonCountByProgram.get(e.program_id) || 0
+  }
+  for (const lp of lessonProgress) {
+    const lvl = programLevel.get(lp.program_id)
+    if (lvl != null) levelBucket(lvl).completed += 1
+  }
+  const byLevel = [...levelAgg.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([level, b]) => ({
+      level,
+      participants: b.participants.size,
+      completionPct:
+        b.possible > 0 ? Number(((b.completed / b.possible) * 100).toFixed(1)) : 0,
+    }))
+
+  // ── Engagement timeline: daily watch + quiz/test activity ─────────────────
+  const dayIndex = new Map()
+  const timeline = []
+  const today = new Date()
+  for (let i = rangeDays - 1; i >= 0; i--) {
+    const d = new Date(today)
+    d.setUTCDate(d.getUTCDate() - i)
+    const key = d.toISOString().slice(0, 10)
+    dayIndex.set(key, timeline.length)
+    timeline.push({ date: key, watch: 0, quiz: 0 })
+  }
+  for (const w of watchSessions) {
+    if (!w.last_watched_at) continue
+    const idx = dayIndex.get(w.last_watched_at.toISOString().slice(0, 10))
+    if (idx != null) timeline[idx].watch += 1
+  }
+  for (const a of [...quizAttempts, ...testAttempts]) {
+    if (!a.submitted_at) continue
+    const idx = dayIndex.get(a.submitted_at.toISOString().slice(0, 10))
+    if (idx != null) timeline[idx].quiz += 1
+  }
+
+  return {
+    range: { days: rangeDays },
+    programCount: programs.length,
+    stats,
+    heatmap: { moduleCount, rows: heatmapRows },
+    dropOff: dropOff.slice(0, 6),
+    byLevel,
+    timeline,
+  }
+}
+
 // GET /api/v1/reports/programs/:pid/progress — participants progress
 router.get(
   '/programs/:pid/progress',
@@ -524,6 +803,28 @@ router.get(
       if (/puppeteer/i.test(err.message || '')) {
         return res.status(503).json({ error: 'PDF generation tidak tersedia' })
       }
+      next(err)
+    }
+  }
+)
+
+// GET /api/v1/reports/analytics/overview?range=7d|30d|quarter
+// Cross-program analytics. No programIsolation — access is scoped inside
+// computeAnalyticsOverview via the caller's JWT programIds.
+router.get(
+  '/analytics/overview',
+  verifyJWT,
+  requireRole('SUPER_ADMIN', 'PROGRAM_ADMIN', 'TRAINER'),
+  async (req, res, next) => {
+    try {
+      const rangeDays = RANGE_DAYS[req.query.range] || 30
+      const overview = await computeAnalyticsOverview({
+        role: req.user.role,
+        programIds: req.user.programIds || [],
+        rangeDays,
+      })
+      res.json(overview)
+    } catch (err) {
       next(err)
     }
   }
