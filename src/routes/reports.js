@@ -6,6 +6,7 @@ const {
   htmlToPdfBuffer,
   buildProgressReportHTML,
   buildCoursesProgressReportHTML,
+  buildAttendanceReportHTML,
 } = require('../services/report.service')
 
 const router = express.Router()
@@ -825,6 +826,116 @@ router.get(
       })
       res.json(overview)
     } catch (err) {
+      next(err)
+    }
+  }
+)
+
+// ─── Attendance report (per session) ────────────────────────────────────────
+
+// Per-session attendance rows for a program.
+async function computeAttendanceRows(programId) {
+  const sessions = await prisma.session.findMany({
+    where: { program_id: programId },
+    include: {
+      trainer: { select: { full_name: true } },
+      attendances: { select: { is_flagged: true } },
+    },
+    orderBy: { scheduled_at: 'asc' },
+  })
+  return sessions.map((s) => ({
+    sessionId: s.id,
+    title: s.title,
+    scheduledAt: s.scheduled_at,
+    location: s.location,
+    trainer: s.trainer?.full_name || null,
+    attended: s.attendances.length,
+    flagged: s.attendances.filter((a) => a.is_flagged).length,
+  }))
+}
+
+// GET /api/v1/reports/programs/:pid/attendance
+router.get(
+  '/programs/:pid/attendance',
+  verifyJWT,
+  requireRole('SUPER_ADMIN', 'PROGRAM_ADMIN', 'TRAINER'),
+  programIsolation,
+  async (req, res, next) => {
+    try {
+      res.json(await computeAttendanceRows(req.programId))
+    } catch (err) {
+      next(err)
+    }
+  }
+)
+
+// GET /api/v1/reports/programs/:pid/attendance.csv
+router.get(
+  '/programs/:pid/attendance.csv',
+  verifyJWT,
+  requireRole('SUPER_ADMIN', 'PROGRAM_ADMIN', 'TRAINER'),
+  programIsolation,
+  async (req, res, next) => {
+    try {
+      const [program, rows] = await Promise.all([
+        prisma.oPRCProgram.findUnique({ where: { id: req.programId } }),
+        computeAttendanceRows(req.programId),
+      ])
+      const headers = ['Sesi', 'Jadwal', 'Lokasi', 'Trainer', 'Hadir', 'Ditandai']
+      const lines = [headers.join(',')]
+      for (const r of rows) {
+        lines.push(
+          [
+            r.title,
+            r.scheduledAt ? new Date(r.scheduledAt).toISOString() : '',
+            r.location || '',
+            r.trainer || '',
+            r.attended,
+            r.flagged,
+          ].map(escapeCsv).join(',')
+        )
+      }
+      const csv = '﻿' + lines.join('\r\n') + '\r\n'
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${reportFilename(program, 'attendance', 'csv')}"`
+      )
+      res.send(csv)
+    } catch (err) {
+      next(err)
+    }
+  }
+)
+
+// GET /api/v1/reports/programs/:pid/attendance.pdf
+router.get(
+  '/programs/:pid/attendance.pdf',
+  verifyJWT,
+  requireRole('SUPER_ADMIN', 'PROGRAM_ADMIN', 'TRAINER'),
+  programIsolation,
+  async (req, res, next) => {
+    try {
+      const [program, rows] = await Promise.all([
+        prisma.oPRCProgram.findUnique({ where: { id: req.programId } }),
+        computeAttendanceRows(req.programId),
+      ])
+      const html = buildAttendanceReportHTML({
+        program,
+        rows,
+        generatedAt: new Date().toLocaleString('id-ID'),
+      })
+      const pdf = await htmlToPdfBuffer(html)
+      res.setHeader('Content-Type', 'application/pdf')
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${reportFilename(program, 'attendance', 'pdf')}"`
+      )
+      res.send(pdf)
+    } catch (err) {
+      if (/puppeteer/i.test(err.message || '')) {
+        return res.status(503).json({ error: 'PDF generation tidak tersedia' })
+      }
       next(err)
     }
   }

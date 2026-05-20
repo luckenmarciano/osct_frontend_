@@ -114,8 +114,45 @@ function buildCoursesProgressReportHTML({ program, courses, generatedAt }) {
   </body></html>`
 }
 
+function buildAttendanceReportHTML({ program, rows, generatedAt }) {
+  const fmtDate = (d) =>
+    d
+      ? new Date(d).toLocaleString('id-ID', {
+          day: 'numeric', month: 'short', year: 'numeric',
+          hour: '2-digit', minute: '2-digit',
+        })
+      : '—'
+  const body = rows.length
+    ? rows
+        .map(
+          (r) => `<tr>
+            <td>${esc(r.title)}</td>
+            <td>${esc(fmtDate(r.scheduledAt))}</td>
+            <td>${esc(r.location || '—')}</td>
+            <td>${esc(r.trainer || '—')}</td>
+            <td class="num">${r.attended}</td>
+            <td class="num">${r.flagged}</td>
+          </tr>`
+        )
+        .join('')
+    : `<tr><td colspan="6" style="text-align:center;color:#64748B;">Belum ada sesi.</td></tr>`
+
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>${PAGE_CSS}</style></head><body>
+    <h1>Laporan Kehadiran Sesi</h1>
+    <div class="meta">${esc(program?.name || '')} · Dibuat ${esc(generatedAt)}</div>
+    <table>
+      <thead><tr>
+        <th>Sesi</th><th>Jadwal</th><th>Lokasi</th><th>Trainer</th>
+        <th>Hadir</th><th>Ditandai</th>
+      </tr></thead>
+      <tbody>${body}</tbody>
+    </table>
+  </body></html>`
+}
+
 module.exports = {
   htmlToPdfBuffer,
   buildProgressReportHTML,
   buildCoursesProgressReportHTML,
+  buildAttendanceReportHTML,
 }
