@@ -359,10 +359,16 @@ router.get(
     try {
       const enrollments = await prisma.programEnrollment.findMany({
         where: { program_id: req.programId },
+        include: { certificate: { select: { claimed_at: true } } },
       })
       const total = enrollments.length
       const withPosttest = enrollments.filter((e) => e.posttest_score != null)
       const eligible = enrollments.filter((e) => e.cert_eligible).length
+      // FR-10.4: certified = certificate claimed; certPending = eligible but not yet claimed.
+      const certified = enrollments.filter((e) => e.certificate?.claimed_at).length
+      const certPending = enrollments.filter(
+        (e) => e.cert_eligible && !e.certificate?.claimed_at
+      ).length
       const avgPretest =
         enrollments.reduce((s, e) => s + (e.pretest_score ?? 0), 0) / (total || 1)
       const avgPosttest =
@@ -374,6 +380,8 @@ router.get(
       res.json({
         total,
         eligible,
+        certified,
+        certPending,
         avgPretest: Number(avgPretest.toFixed(2)),
         avgPosttest: Number(avgPosttest.toFixed(2)),
         avgGain: Number((avgPosttest - avgPretest).toFixed(2)),
