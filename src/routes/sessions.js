@@ -7,6 +7,48 @@ const { rotateSessionToken, generateSessionQR } = require('../services/qr.servic
 
 const router = express.Router()
 
+// Soft schedule-conflict check. Returns warnings (never a hard block) when the
+// proposed session overlaps another session in the same program that shares
+// the same trainer or location. Sessions with no explicit duration are
+// assumed to run DEFAULT_DURATION_MIN.
+const DEFAULT_DURATION_MIN = 60
+async function findSessionConflicts({ programId, excludeId, trainerId, location, scheduledAt, durationMin }) {
+  const start = new Date(scheduledAt).getTime()
+  const end = start + (durationMin || DEFAULT_DURATION_MIN) * 60000
+
+  const orConds = [{ trainer_id: trainerId }]
+  if (location) orConds.push({ location })
+
+  const candidates = await prisma.session.findMany({
+    where: {
+      program_id: programId,
+      ...(excludeId ? { id: { not: excludeId } } : {}),
+      OR: orConds,
+    },
+    select: {
+      id: true,
+      title: true,
+      scheduled_at: true,
+      duration_min: true,
+      trainer_id: true,
+      location: true,
+    },
+  })
+
+  const warnings = []
+  for (const c of candidates) {
+    const cStart = new Date(c.scheduled_at).getTime()
+    const cEnd = cStart + (c.duration_min || DEFAULT_DURATION_MIN) * 60000
+    if (start < cEnd && cStart < end) {
+      warnings.push({
+        type: c.trainer_id === trainerId ? 'trainer' : 'location',
+        sessionTitle: c.title,
+      })
+    }
+  }
+  return warnings
+}
+
 // GET /api/v1/sessions/programs/:pid — list all sessions in program
 router.get(
   '/programs/:pid',
@@ -68,6 +110,9 @@ router.post(
           locationLat: z.number().min(-90).max(90).nullable().optional(),
           locationLng: z.number().min(-180).max(180).nullable().optional(),
           geoRadiusM: z.number().int().min(10).max(50000).nullable().optional(),
+          trainerId: z.string().optional(),
+          sessionType: z.enum(['LECTURE', 'DRILL', 'EXAM']).nullable().optional(),
+          durationMin: z.number().int().min(5).max(1440).nullable().optional(),
         })
         .parse(req.body)
 
@@ -78,19 +123,47 @@ router.post(
         return res.status(403).json({ error: 'No access to this program' })
       }
 
+      // Resolve the trainer — defaults to the creator, or an explicitly
+      // chosen trainer who must already be assigned to the program.
+      let trainerId = req.user.id
+      if (data.trainerId) {
+        const pt = await prisma.programTrainer.findUnique({
+          where: {
+            user_id_program_id: {
+              user_id: data.trainerId,
+              program_id: data.programId,
+            },
+          },
+        })
+        if (!pt) {
+          return res.status(400).json({ error: 'Trainer belum ditugaskan ke program ini' })
+        }
+        trainerId = data.trainerId
+      }
+
+      const warnings = await findSessionConflicts({
+        programId: data.programId,
+        trainerId,
+        location: data.location,
+        scheduledAt: data.scheduledAt,
+        durationMin: data.durationMin,
+      })
+
       const session = await prisma.session.create({
         data: {
           program_id: data.programId,
-          trainer_id: req.user.id,
+          trainer_id: trainerId,
           title: data.title,
           scheduled_at: data.scheduledAt,
           location: data.location,
           location_lat: data.locationLat,
           location_lng: data.locationLng,
           geo_radius_m: data.geoRadiusM,
+          session_type: data.sessionType,
+          duration_min: data.durationMin,
         },
       })
-      res.status(201).json(session)
+      res.status(201).json({ ...session, warnings })
     } catch (err) {
       next(err)
     }
@@ -112,6 +185,9 @@ router.put(
           locationLat: z.number().min(-90).max(90).nullable().optional(),
           locationLng: z.number().min(-180).max(180).nullable().optional(),
           geoRadiusM: z.number().int().min(10).max(50000).nullable().optional(),
+          trainerId: z.string().optional(),
+          sessionType: z.enum(['LECTURE', 'DRILL', 'EXAM']).nullable().optional(),
+          durationMin: z.number().int().min(5).max(1440).nullable().optional(),
         })
         .parse(req.body)
 
@@ -125,6 +201,30 @@ router.put(
         return res.status(403).json({ error: 'No access to this session' })
       }
 
+      if (data.trainerId) {
+        const pt = await prisma.programTrainer.findUnique({
+          where: {
+            user_id_program_id: {
+              user_id: data.trainerId,
+              program_id: existing.program_id,
+            },
+          },
+        })
+        if (!pt) {
+          return res.status(400).json({ error: 'Trainer belum ditugaskan ke program ini' })
+        }
+      }
+
+      const warnings = await findSessionConflicts({
+        programId: existing.program_id,
+        excludeId: existing.id,
+        trainerId: data.trainerId ?? existing.trainer_id,
+        location: data.location !== undefined ? data.location : existing.location,
+        scheduledAt: data.scheduledAt ?? existing.scheduled_at,
+        durationMin:
+          data.durationMin !== undefined ? data.durationMin : existing.duration_min,
+      })
+
       const session = await prisma.session.update({
         where: { id: req.params.id },
         data: {
@@ -134,9 +234,12 @@ router.put(
           ...(data.locationLat !== undefined && { location_lat: data.locationLat }),
           ...(data.locationLng !== undefined && { location_lng: data.locationLng }),
           ...(data.geoRadiusM !== undefined && { geo_radius_m: data.geoRadiusM }),
+          ...(data.trainerId !== undefined && { trainer_id: data.trainerId }),
+          ...(data.sessionType !== undefined && { session_type: data.sessionType }),
+          ...(data.durationMin !== undefined && { duration_min: data.durationMin }),
         },
       })
-      res.json(session)
+      res.json({ ...session, warnings })
     } catch (err) {
       next(err)
     }

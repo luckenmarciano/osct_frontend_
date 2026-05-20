@@ -68,6 +68,13 @@ enum TrainingMode {
   PUBLIC
 }
 
+// Delivery format of an in-person session.
+enum SessionType {
+  LECTURE
+  DRILL
+  EXAM
+}
+
 // ─── Users & Auth ─────────────────────────────────────────────────────────────
 
 model User {
@@ -489,6 +496,8 @@ model Session {
   location_lat Float?
   location_lng Float?
   geo_radius_m Int?
+  session_type SessionType?
+  duration_min Int?
   is_active    Boolean  @default(false)
   created_at   DateTime @default(now())
 
