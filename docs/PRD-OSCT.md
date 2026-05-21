@@ -648,14 +648,15 @@ Aturan yang sudah diputuskan dan **tidak perlu diperdebatkan ulang**:
 
 ## 11. Roadmap & Backlog
 
-### 11.1 Sedang Dikerjakan
+### 11.1 Baru Selesai
 
-**FR-18 — Mobile Responsive Pass** 🔧 *(selesai di kode, belum di-deploy)*
-- Sidebar menjadi *off-canvas drawer* dengan tombol hamburger (selesai).
-- Grid runtuh ke 1 kolom, modal jadi fluid, tabel lebar dibungkus `TableWrap` agar bisa scroll horizontal (selesai).
-- Kalender sesi → tampilan agenda di mobile; AI chat menyembunyikan panel riwayat (selesai).
-- `TestScreens.jsx` (layar pengerjaan tes) — navigator soal mempertahankan grid 5 kolom di mobile; hero hasil tes dibuat *wrap* + lebar fluid (selesai).
-- **Sisa:** commit + deploy, lalu ubah status menjadi ✅ Shipped.
+**FR-18 — Mobile Responsive Pass** ✅ Shipped *(merged ke `main` 2026-05-21)*
+- Sidebar menjadi *off-canvas drawer* dengan tombol hamburger.
+- Grid runtuh ke 1 kolom, modal jadi fluid, tabel lebar dibungkus `TableWrap` agar bisa scroll horizontal.
+- Kalender sesi → tampilan agenda di mobile; AI chat menyembunyikan panel riwayat.
+- `TestScreens.jsx` — navigator soal mempertahankan grid 5 kolom di mobile; hero hasil tes *wrap* + lebar fluid.
+
+> Tidak ada pekerjaan lain yang sedang berjalan saat ini.
 
 ### 11.2 Backlog Usulan (Belum Dijadwalkan)
 
