@@ -312,12 +312,17 @@ Setiap FR memuat: deskripsi, acceptance criteria, dan referensi data/endpoint. P
 
 **FR-7.5 Learning Gain** ✅
 - Layar Learning Gain menampilkan posttest − pretest per peserta dan rata-rata batch.
-- Target acuan PRD: gain ≥ 20; lulus posttest ≥ 70.
+- Nilai lulus posttest = **70** (konstanta backend `POSTTEST_THRESHOLD`) — di-enforce sistem untuk kelayakan sertifikat.
+- Target *gain* ≥ 20 hanya **target tampilan/aspiratif** di layar tes; **tidak** di-enforce sistem.
 
 **FR-7.6 Cohort & Notifikasi** ✅
 - Notifikasi tes (mis. tes baru tersedia, esai sudah dinilai) muncul untuk peserta.
 
+**FR-7.7 Prasyarat Posttest** ✅
+- Posttest hanya terbuka setelah **seluruh lesson program selesai** (`isProgramLearningComplete` — semua `LessonProgress.completed = true`).
+
 **Acceptance Criteria:**
+- [ ] Posttest terkunci sampai seluruh lesson program selesai.
 - [ ] Peserta tidak dapat melebihi `max_attempts`.
 - [ ] Timer habis → jawaban tersubmit otomatis.
 - [ ] Skor MCQ langsung; esai menunggu trainer.
@@ -400,7 +405,11 @@ Setiap FR memuat: deskripsi, acceptance criteria, dan referensi data/endpoint. P
 **Deskripsi:** Penerbitan sertifikat OPRC, klaim mandiri oleh peserta, dan verifikasi keaslian oleh publik.
 
 **FR-11.1 Kelayakan Sertifikat** ✅
-- `cert_eligible` pada enrollment ditentukan dari syarat kelulusan (skor posttest + kehadiran).
+- `cert_eligible = true` bila **kedua** syarat terpenuhi:
+  1. `attendance_pct ≥ 80%` (konstanta `ATTENDANCE_THRESHOLD`)
+  2. `posttest_score ≥ 70` (konstanta `POSTTEST_THRESHOLD`)
+- `attendance_pct` = (jumlah sesi dihadiri ÷ jumlah sesi yang `scheduled_at`-nya sudah lewat) × 100.
+- Dihitung ulang otomatis setiap peserta melakukan scan presensi (`recomputeAttendancePct`).
 
 **FR-11.2 Penerbitan** ✅
 - `Certificate` punya `cert_no` unik, `verification_code` unik, `code_expires_at`, `pdf_url`.
@@ -616,6 +625,9 @@ Aturan yang sudah diputuskan dan **tidak perlu diperdebatkan ulang**:
 12. **Tidak ada data fiktif** — panel tanpa data pendukung dihapus, bukan diisi angka palsu/proxy.
 13. **Resend test mode** — email hanya sampai ke pemilik akun sampai domain diverifikasi.
 14. **Migrasi DB** dijalankan lokal (`prisma migrate deploy`), tidak pernah saat runtime Vercel.
+15. **Kelayakan sertifikat** = `attendance_pct ≥ 80%` **DAN** `posttest_score ≥ 70`. Kedua ambang adalah konstanta backend.
+16. **Posttest terkunci** sampai seluruh lesson program selesai (`isProgramLearningComplete`).
+17. **Kehadiran** dihitung terhadap sesi yang `scheduled_at`-nya sudah lewat; di-recompute setiap scan presensi.
 
 ---
 
@@ -647,14 +659,14 @@ Aturan yang sudah diputuskan dan **tidak perlu diperdebatkan ulang**:
 
 ### 11.2 Backlog Usulan (Belum Dijadwalkan)
 
-**Prioritas Tinggi**
+**Prioritas Tinggi** *(dikonfirmasi pemilik produk, 21 Mei 2026)*
 - **FR-19 — Notifikasi fungsional** — ikon lonceng saat ini non-fungsional; perlu pusat notifikasi nyata (tes, sesi, sertifikat, penugasan).
-- **FR-20 — Verifikasi domain email** — agar email menjangkau seluruh peserta, bukan hanya pemilik akun Resend.
-- **FR-21 — Pencarian global** — kolom pencarian di topnav saat ini disembunyikan di mobile dan belum fungsional.
+- **FR-20 — Verifikasi domain email** — agar email menjangkau seluruh peserta, bukan hanya pemilik akun Resend. Saat ini bersifat *blocker* bagi seluruh notifikasi email.
+- **FR-23 — Pelaporan kepatuhan IMO** — laporan terstandardisasi sesuai format regulator; menambah nilai jual & kredibilitas untuk lembaga pelatihan.
 
 **Prioritas Menengah**
+- **FR-21 — Pencarian global** — kolom pencarian di topnav belum fungsional (dan disembunyikan di mobile).
 - **FR-22 — Manajemen kuota kursus** — `Course.quota` sudah ada di skema tetapi belum diberdayakan penuh.
-- **FR-23 — Pelaporan kepatuhan IMO** — laporan terstandардisasi sesuai format regulator.
 - **FR-24 — Bulk certificate operations** — terbitkan/kirim sertifikat satu batch sekaligus.
 - **FR-25 — Reminder pretest/posttest terjadwal** — perluasan pola cron sesi ke asesmen.
 
@@ -669,6 +681,7 @@ Aturan yang sudah diputuskan dan **tidak perlu diperdebatkan ulang**:
 - `Course.is_published` (boolean legacy) perlu dihapus setelah semua pembaca beralih ke `Course.status`.
 - Bundle JS frontend > 500 KB — kandidat *manual chunking* / *dynamic import*.
 - `react-hot-toast` di-import secara statis sekaligus dinamis — konsolidasikan.
+- `@anthropic-ai/sdk` + `src/config/claude.js` adalah kode mati — `claude.js` tidak diimpor di mana pun; layanan AI sepenuhnya memakai Gemini. Hapus dependency & file ini.
 
 ---
 
