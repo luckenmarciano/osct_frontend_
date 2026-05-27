@@ -303,6 +303,83 @@ async function sendPasswordResetEmail({ to, fullName, resetUrl }) {
   }
 }
 
+// ─── FR-25: Test reminder (pretest / posttest) ───────────────────────────────
+async function sendTestReminderEmail({ to, participantName, programName, testType, programId }) {
+  const isPretest = testType === 'PRETEST'
+  const subject = `[OSCT] Pengingat ${isPretest ? 'Pretest' : 'Posttest'} — ${programName}`
+  const inner = isPretest
+    ? `<p>Halo <strong>${escapeHtml(participantName)}</strong>,</p>
+       <p>Anda belum mengerjakan <strong>pretest</strong> untuk program <strong>${escapeHtml(programName)}</strong>.</p>
+       <p>Pretest membantu mengukur kemampuan awal Anda sebelum memulai pembelajaran. Silakan login dan kerjakan sekarang.</p>`
+    : `<p>Halo <strong>${escapeHtml(participantName)}</strong>,</p>
+       <p>Seluruh materi program <strong>${escapeHtml(programName)}</strong> sudah selesai! 🎉</p>
+       <p>Jangan lupa kerjakan <strong>posttest</strong> untuk mengukur kemajuan belajar Anda dan mendapatkan sertifikat.</p>`
+
+  const html = wrapHtml(inner, { programName })
+  const baseLog = {
+    program_id: programId || null,
+    to_email: to,
+    subject,
+    body_preview: (isPretest ? 'Pengingat pretest' : 'Pengingat posttest'),
+    kind: 'TEST_REMINDER',
+  }
+
+  try {
+    const r = getResend()
+    const { data, error } = await r.emails.send({
+      from: env.FROM_EMAIL || 'OSCT <noreply@osct.id>',
+      to,
+      subject,
+      html,
+    })
+    if (error) throw error
+    await safeLog({ ...baseLog, status: 'sent' })
+    return data
+  } catch (err) {
+    await safeLog({ ...baseLog, status: 'failed', error: err.message })
+    throw err
+  }
+}
+
+// ─── FR-27: Scheduled report email ───────────────────────────────────────────
+async function sendScheduledReportEmail({ to, adminName, programName, reportType, csvContent, programId }) {
+  const typeLabel = { PARTICIPANTS: 'Progres Peserta', COURSES: 'Progres Kursus', ATTENDANCE: 'Kehadiran' }[reportType] || reportType
+  const subject = `[OSCT] Laporan Terjadwal: ${typeLabel} — ${programName}`
+  const inner = `
+    <p>Halo <strong>${escapeHtml(adminName || 'Admin')}</strong>,</p>
+    <p>Berikut laporan terjadwal untuk program <strong>${escapeHtml(programName)}</strong>:</p>
+    <p style="color:#64748B; font-size:13px;">Laporan <strong>${escapeHtml(typeLabel)}</strong> terlampir sebagai file CSV.</p>
+    <p>Untuk melihat laporan lengkap, login ke platform OSCT.</p>
+  `
+  const html = wrapHtml(inner, { programName })
+  const baseLog = {
+    program_id: programId || null,
+    to_email: to,
+    subject,
+    body_preview: `Laporan terjadwal: ${typeLabel}`,
+    kind: 'CUSTOM',
+  }
+
+  try {
+    const r = getResend()
+    const { data, error } = await r.emails.send({
+      from: env.FROM_EMAIL || 'OSCT <noreply@osct.id>',
+      to,
+      subject,
+      html,
+      attachments: csvContent
+        ? [{ filename: `report-${reportType.toLowerCase()}.csv`, content: Buffer.from(csvContent).toString('base64') }]
+        : [],
+    })
+    if (error) throw error
+    await safeLog({ ...baseLog, status: 'sent' })
+    return data
+  } catch (err) {
+    await safeLog({ ...baseLog, status: 'failed', error: err.message })
+    throw err
+  }
+}
+
 module.exports = {
   sendVerificationCodeEmail,
   sendCustomEmail,
@@ -310,4 +387,6 @@ module.exports = {
   sendSessionReminderEmail,
   sendLoginQREmail,
   sendPasswordResetEmail,
+  sendTestReminderEmail,
+  sendScheduledReportEmail,
 }

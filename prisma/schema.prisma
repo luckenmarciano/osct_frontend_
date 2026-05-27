@@ -52,6 +52,7 @@ enum EmailKind {
   SESSION_REMINDER
   CERT_VERIFICATION
   PASSWORD_RESET
+  TEST_REMINDER     // FR-25: pretest / posttest reminder cron
 }
 
 // In-app notification types for FR-19.
@@ -120,6 +121,7 @@ model User {
   refresh_tokens    RefreshToken[]
   trusted_devices   DeviceTrust[]
   notifications     Notification[]
+  report_schedules  ReportSchedule[]    // FR-27
 
   @@map("users")
 }
@@ -214,6 +216,7 @@ model OPRCProgram {
   test_attempts    TestAttempt[]
   lesson_progress  LessonProgress[]
   attendances      Attendance[]
+  report_schedules ReportSchedule[]    // FR-27
 
   @@map("oprc_programs")
 }
@@ -717,4 +720,37 @@ model Notification {
   @@index([user_id, read_at])
   @@index([user_id, created_at(sort: Desc)])
   @@map("notifications")
+}
+
+// ─── Report schedules (FR-27) ─────────────────────────────────────────────────
+
+// Admin configures a recurring report to be emailed automatically.
+// Cron job (GET /reports/cron/scheduled-exports) checks this table daily.
+model ReportSchedule {
+  id           String    @id @default(cuid())
+  program_id   String
+  admin_id     String
+  report_type  String    // PARTICIPANTS | COURSES | ATTENDANCE
+  frequency    String    // WEEKLY | MONTHLY
+  email        String    // recipient; defaults to admin email at creation
+  is_active    Boolean   @default(true)
+  last_sent_at DateTime?
+  created_at   DateTime  @default(now())
+
+  program OPRCProgram @relation(fields: [program_id], references: [id], onDelete: Cascade)
+  admin   User        @relation(fields: [admin_id], references: [id], onDelete: Cascade)
+
+  @@map("report_schedules")
+}
+
+// ─── App settings / white-label (FR-28) ──────────────────────────────────────
+
+// Key-value store for global application settings.
+// Keys: institution_name, logo_url, primary_color, footer_text
+model AppSetting {
+  key        String   @id
+  value      String   @db.Text
+  updated_at DateTime @updatedAt
+
+  @@map("app_settings")
 }

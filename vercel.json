@@ -11,6 +11,8 @@
     { "source": "/(.*)", "destination": "/api/index.js" }
   ],
   "crons": [
-    { "path": "/api/v1/emails/cron/session-reminders", "schedule": "0 1 * * *" }
+    { "path": "/api/v1/emails/cron/session-reminders",  "schedule": "0 1 * * *" },
+    { "path": "/api/v1/tests/cron/test-reminders",       "schedule": "0 2 * * *" },
+    { "path": "/api/v1/reports/cron/scheduled-exports",  "schedule": "0 3 * * *" }
   ]
 }

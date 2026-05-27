@@ -2,12 +2,14 @@ const express = require('express')
 const prisma = require('../lib/prisma')
 const { verifyJWT, requireRole } = require('../middleware/auth')
 const { programIsolation } = require('../middleware/programIsolation')
+const env = require('../config/env')
 const {
   htmlToPdfBuffer,
   buildProgressReportHTML,
   buildCoursesProgressReportHTML,
   buildAttendanceReportHTML,
 } = require('../services/report.service')
+const { sendScheduledReportEmail } = require('../services/email.service')
 
 const router = express.Router()
 
@@ -940,5 +942,178 @@ router.get(
     }
   }
 )
+
+// ─── FR-27: Report schedules ──────────────────────────────────────────────────
+
+// GET /api/v1/reports/programs/:pid/schedules
+router.get(
+  '/programs/:pid/schedules',
+  verifyJWT,
+  requireRole('SUPER_ADMIN', 'PROGRAM_ADMIN'),
+  programIsolation,
+  async (req, res, next) => {
+    try {
+      const schedules = await prisma.reportSchedule.findMany({
+        where: { program_id: req.programId },
+        orderBy: { created_at: 'desc' },
+      })
+      res.json(schedules)
+    } catch (err) {
+      next(err)
+    }
+  }
+)
+
+// POST /api/v1/reports/programs/:pid/schedules
+const { z } = require('zod')
+router.post(
+  '/programs/:pid/schedules',
+  verifyJWT,
+  requireRole('SUPER_ADMIN', 'PROGRAM_ADMIN'),
+  programIsolation,
+  async (req, res, next) => {
+    try {
+      const data = z.object({
+        report_type: z.enum(['PARTICIPANTS', 'COURSES', 'ATTENDANCE']),
+        frequency:   z.enum(['WEEKLY', 'MONTHLY']),
+        email:       z.string().email(),
+      }).parse(req.body)
+
+      const schedule = await prisma.reportSchedule.create({
+        data: { ...data, program_id: req.programId, admin_id: req.user.id },
+      })
+      res.status(201).json(schedule)
+    } catch (err) {
+      next(err)
+    }
+  }
+)
+
+// PATCH /api/v1/reports/programs/:pid/schedules/:id — toggle active
+router.patch(
+  '/programs/:pid/schedules/:id',
+  verifyJWT,
+  requireRole('SUPER_ADMIN', 'PROGRAM_ADMIN'),
+  programIsolation,
+  async (req, res, next) => {
+    try {
+      const { is_active } = z.object({ is_active: z.boolean() }).parse(req.body)
+      const schedule = await prisma.reportSchedule.findFirst({
+        where: { id: req.params.id, program_id: req.programId },
+      })
+      if (!schedule) return res.status(404).json({ error: 'Schedule not found' })
+      const updated = await prisma.reportSchedule.update({
+        where: { id: schedule.id },
+        data: { is_active },
+      })
+      res.json(updated)
+    } catch (err) {
+      next(err)
+    }
+  }
+)
+
+// DELETE /api/v1/reports/programs/:pid/schedules/:id
+router.delete(
+  '/programs/:pid/schedules/:id',
+  verifyJWT,
+  requireRole('SUPER_ADMIN', 'PROGRAM_ADMIN'),
+  programIsolation,
+  async (req, res, next) => {
+    try {
+      const schedule = await prisma.reportSchedule.findFirst({
+        where: { id: req.params.id, program_id: req.programId },
+      })
+      if (!schedule) return res.status(404).json({ error: 'Schedule not found' })
+      await prisma.reportSchedule.delete({ where: { id: schedule.id } })
+      res.json({ ok: true })
+    } catch (err) {
+      next(err)
+    }
+  }
+)
+
+// GET /api/v1/reports/cron/scheduled-exports — FR-27 Cron (daily)
+// Runs active schedules that are due: WEEKLY = 7 days since last_sent_at,
+// MONTHLY = 30 days. Generates CSV and emails it to the schedule's email.
+router.get('/cron/scheduled-exports', async (req, res, next) => {
+  try {
+    if (!env.CRON_SECRET || req.headers.authorization !== `Bearer ${env.CRON_SECRET}`) {
+      return res.status(401).json({ error: 'Unauthorized' })
+    }
+
+    const now = new Date()
+    const schedules = await prisma.reportSchedule.findMany({
+      where: { is_active: true },
+      include: {
+        program: true,
+        admin: { select: { full_name: true } },
+      },
+    })
+
+    let sent = 0, skipped = 0, failed = 0
+
+    for (const sched of schedules) {
+      // Check if due
+      const intervalMs = sched.frequency === 'WEEKLY'
+        ? 7  * 24 * 60 * 60 * 1000
+        : 30 * 24 * 60 * 60 * 1000
+      const isDue = !sched.last_sent_at || (now - sched.last_sent_at) >= intervalMs
+      if (!isDue) { skipped++; continue }
+
+      try {
+        // Generate CSV content
+        let csvContent = ''
+        if (sched.report_type === 'PARTICIPANTS') {
+          const rows = await computeProgressRows(sched.program_id)
+          const headers = ['Nama','Email','Pretest','Posttest','Gain','Attendance%','Eligible']
+          const lines = rows.map((r) => [r.name, r.email, r.pretest ?? '', r.posttest ?? '', r.gain ?? '', r.attendance ?? '', r.certEligible ? 'Yes' : 'No'].map(escapeCsv).join(','))
+          csvContent = '﻿' + [headers.join(','), ...lines].join('\r\n') + '\r\n'
+        } else if (sched.report_type === 'ATTENDANCE') {
+          const sessions = await prisma.session.findMany({
+            where: { program_id: sched.program_id },
+            include: { attendances: { include: { user: { select: { full_name: true, email: true } } } } },
+            orderBy: { scheduled_at: 'desc' },
+            take: 50,
+          })
+          const headers = ['Sesi','Tanggal','Peserta','Email','Flagged']
+          const lines = sessions.flatMap((s) =>
+            s.attendances.map((a) =>
+              [s.title, s.scheduled_at.toISOString().slice(0,10), a.user.full_name, a.user.email, a.is_flagged ? 'Ya' : 'Tidak'].map(escapeCsv).join(',')
+            )
+          )
+          csvContent = '﻿' + [headers.join(','), ...lines].join('\r\n') + '\r\n'
+        } else {
+          const courses = await computeCoursesProgress(sched.program_id)
+          const headers = ['Kursus','Total Lesson','Peserta','Selesai']
+          const lines = courses.map((c) => [c.title, c.totalLessons, c.enrolledCount, c.completedCount ?? 0].map(escapeCsv).join(','))
+          csvContent = '﻿' + [headers.join(','), ...lines].join('\r\n') + '\r\n'
+        }
+
+        await sendScheduledReportEmail({
+          to: sched.email,
+          adminName: sched.admin?.full_name,
+          programName: sched.program.name,
+          reportType: sched.report_type,
+          csvContent,
+          programId: sched.program_id,
+        })
+
+        await prisma.reportSchedule.update({
+          where: { id: sched.id },
+          data: { last_sent_at: now },
+        })
+        sent++
+      } catch (e) {
+        console.error('[scheduled-exports] schedule', sched.id, e.message)
+        failed++
+      }
+    }
+
+    res.json({ schedulesChecked: schedules.length, sent, skipped, failed })
+  } catch (err) {
+    next(err)
+  }
+})
 
 module.exports = router

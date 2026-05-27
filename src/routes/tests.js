@@ -787,4 +787,103 @@ router.delete(
   }
 )
 
+// ─── FR-25: Cron — test reminders ────────────────────────────────────────────
+// Hit daily by Vercel Cron (see vercel.json).
+// For each active program:
+//   • PRETEST reminder  → enrolled > 2 days ago, pretest_score IS NULL,
+//                         no TEST_REMINDER email to this participant in last 7 days
+//   • POSTTEST reminder → pretest done, posttest_score IS NULL,
+//                         all lessons completed, no reminder in last 7 days
+// Dedup via EmailLog: we look for any TEST_REMINDER email to the user for this
+// program (subject contains the program name) within the last 7 days.
+
+const { sendTestReminderEmail } = require('../services/email.service')
+const env = require('../config/env')
+
+router.get('/cron/test-reminders', async (req, res, next) => {
+  try {
+    if (!env.CRON_SECRET || req.headers.authorization !== `Bearer ${env.CRON_SECRET}`) {
+      return res.status(401).json({ error: 'Unauthorized' })
+    }
+
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+    const twoDaysAgo  = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000)
+
+    // Active programs with at least one published course and a pretest
+    const programs = await prisma.oPRCProgram.findMany({
+      where: { is_active: true },
+      include: { course_tests: { select: { type: true } } },
+    })
+
+    let sentPretest = 0, sentPosttest = 0, failed = 0
+
+    for (const prog of programs) {
+      const hasPretest  = prog.course_tests.some((ct) => ct.type === 'PRETEST')
+      const hasPosttest = prog.course_tests.some((ct) => ct.type === 'POSTTEST')
+
+      const enrollments = await prisma.programEnrollment.findMany({
+        where: { program_id: prog.id },
+        include: { user: { select: { id: true, email: true, full_name: true, is_active: true } } },
+      })
+
+      // Recent TEST_REMINDER emails for this program (batch fetch, filter client-side)
+      const recentLogs = await prisma.emailLog.findMany({
+        where: {
+          kind: 'TEST_REMINDER',
+          created_at: { gte: sevenDaysAgo },
+          subject: { contains: prog.name },
+        },
+        select: { to_email: true, subject: true },
+      })
+      const recentSet = new Set(recentLogs.map((l) => `${l.to_email}::${l.subject.includes('Posttest') ? 'POSTTEST' : 'PRETEST'}`))
+
+      for (const enr of enrollments) {
+        if (!enr.user?.is_active || !enr.user?.email) continue
+        const key = (type) => `${enr.user.email}::${type}`
+
+        // — Pretest reminder —
+        if (hasPretest && enr.pretest_score == null && enr.enrolled_at < twoDaysAgo) {
+          if (!recentSet.has(key('PRETEST'))) {
+            try {
+              await sendTestReminderEmail({
+                to: enr.user.email,
+                participantName: enr.user.full_name,
+                programName: prog.name,
+                testType: 'PRETEST',
+                programId: prog.id,
+              })
+              sentPretest++
+            } catch { failed++ }
+          }
+        }
+
+        // — Posttest reminder —
+        if (hasPosttest && enr.pretest_score != null && enr.posttest_score == null) {
+          if (!recentSet.has(key('POSTTEST'))) {
+            // Only remind if all lessons completed
+            const { isProgramLearningComplete } = require('../services/enrollment.service')
+            const done = await isProgramLearningComplete({ userId: enr.user_id, programId: prog.id })
+            if (done) {
+              try {
+                await sendTestReminderEmail({
+                  to: enr.user.email,
+                  participantName: enr.user.full_name,
+                  programName: prog.name,
+                  testType: 'POSTTEST',
+                  programId: prog.id,
+                })
+                sentPosttest++
+              } catch { failed++ }
+            }
+          }
+        }
+      }
+    }
+
+    res.json({ programsScanned: programs.length, sentPretest, sentPosttest, failed })
+  } catch (err) {
+    next(err)
+  }
+})
+
 module.exports = router
