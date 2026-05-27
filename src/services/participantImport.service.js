@@ -160,6 +160,7 @@ async function importParticipantsCSV({
   sendQrEmail,
   actingUserId,
   req,
+  quotaInfo, // FR-22: { quota, enrolledCount } from checkCourseQuota
 }) {
   const program = await prisma.oPRCProgram.findUnique({ where: { id: programId } })
   if (!program) throw new Error('Program not found')
@@ -206,7 +207,13 @@ async function importParticipantsCSV({
     enrolled: 0,
     skipped: 0,
     errors: [],
+    quotaWarning: null, // FR-22
   }
+
+  // FR-22: Track how many seats remain and warn / skip rows that would exceed quota
+  let remainingSeats = quotaInfo?.quota != null
+    ? quotaInfo.quota - quotaInfo.enrolledCount
+    : Infinity
 
   for (let i = 0; i < dataRows.length; i++) {
     const cols = dataRows[i]
@@ -283,14 +290,28 @@ async function importParticipantsCSV({
         create: { ...profileData, user_id: user.id },
       })
 
-      // Upsert enrollment
+      // Upsert enrollment (FR-22: respect quota)
       const existingEnrollment = await prisma.programEnrollment.findUnique({
         where: { user_id_program_id: { user_id: user.id, program_id: programId } },
       })
       if (!existingEnrollment) {
+        if (remainingSeats <= 0) {
+          // Quota full — skip enrollment, record warning on this row
+          result.skipped++
+          result.errors.push({
+            row: rowNum,
+            email: user.email,
+            reason: `Kuota kursus penuh (${quotaInfo.quota} slot) — peserta tidak di-enroll`,
+          })
+          if (!result.quotaWarning) {
+            result.quotaWarning = `Kuota kursus (${quotaInfo.quota}) penuh. Beberapa baris di-skip.`
+          }
+          continue
+        }
         await prisma.programEnrollment.create({
           data: { user_id: user.id, program_id: programId },
         })
+        remainingSeats--
         result.enrolled++
       }
 

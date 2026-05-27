@@ -28,6 +28,7 @@ router.get(
 // GET /api/v1/courses/programs/:pid — list courses in a program.
 // Participants only see PUBLISHED courses; trainer/admin see all unless
 // ?status= is provided explicitly.
+// FR-22: enrolledCount is included in each course so the UI can display quota usage.
 router.get('/programs/:pid', verifyJWT, programIsolation, async (req, res, next) => {
   try {
     const isStaff = ['SUPER_ADMIN', 'PROGRAM_ADMIN', 'TRAINER'].includes(req.user.role)
@@ -41,14 +42,17 @@ router.get('/programs/:pid', verifyJWT, programIsolation, async (req, res, next)
       where.status = requested
     }
 
-    const courses = await prisma.course.findMany({
-      where,
-      include: {
-        _count: { select: { modules: true } },
-      },
-      orderBy: { order_index: 'asc' },
-    })
-    res.json(courses)
+    const [courses, enrolledCount] = await Promise.all([
+      prisma.course.findMany({
+        where,
+        include: { _count: { select: { modules: true } } },
+        orderBy: { order_index: 'asc' },
+      }),
+      // FR-22: program enrollment count shared across all courses in this program
+      prisma.programEnrollment.count({ where: { program_id: req.programId } }),
+    ])
+
+    res.json(courses.map((c) => ({ ...c, enrolledCount })))
   } catch (err) {
     next(err)
   }

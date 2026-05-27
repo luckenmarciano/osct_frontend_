@@ -113,6 +113,25 @@ router.get(
   }
 )
 
+// FR-22: Shared quota guard — checks if enrolling N more participants would exceed
+// the minimum quota across published courses in this program.
+// Returns { isFull, quota, enrolledCount } or null if no quota is set.
+async function checkCourseQuota(programId, addingCount = 1) {
+  const restrictiveCourse = await prisma.course.findFirst({
+    where: { program_id: programId, status: 'PUBLISHED', quota: { not: null } },
+    orderBy: { quota: 'asc' }, // most restrictive first
+    select: { quota: true, title: true },
+  })
+  if (!restrictiveCourse) return null // no quota set
+  const enrolledCount = await prisma.programEnrollment.count({ where: { program_id: programId } })
+  return {
+    isFull: enrolledCount + addingCount > restrictiveCourse.quota,
+    quota: restrictiveCourse.quota,
+    enrolledCount,
+    courseTitle: restrictiveCourse.title,
+  }
+}
+
 // POST /api/v1/programs/:pid/enrollments — enroll a participant
 router.post(
   '/:pid/enrollments',
@@ -122,6 +141,21 @@ router.post(
   async (req, res, next) => {
     try {
       const { userId } = z.object({ userId: z.string().min(1) }).parse(req.body)
+
+      // FR-22: quota check (skip if participant is already enrolled — re-enroll is a no-op)
+      const alreadyEnrolled = await prisma.programEnrollment.findUnique({
+        where: { user_id_program_id: { user_id: userId, program_id: req.programId } },
+      })
+      if (!alreadyEnrolled) {
+        const quota = await checkCourseQuota(req.programId)
+        if (quota?.isFull) {
+          return res.status(409).json({
+            error: `Kuota kursus penuh (${quota.enrolledCount}/${quota.quota})`,
+            code: 'QUOTA_FULL',
+          })
+        }
+      }
+
       const enrollment = await prisma.programEnrollment.upsert({
         where: { user_id_program_id: { user_id: userId, program_id: req.programId } },
         update: {},
@@ -156,6 +190,15 @@ router.post(
       const existing = await prisma.user.findUnique({ where: { email: data.email } })
       if (existing) {
         return res.status(409).json({ error: 'Email sudah terdaftar' })
+      }
+
+      // FR-22: quota check before creating the user
+      const quota = await checkCourseQuota(req.programId)
+      if (quota?.isFull) {
+        return res.status(409).json({
+          error: `Kuota kursus penuh (${quota.enrolledCount}/${quota.quota})`,
+          code: 'QUOTA_FULL',
+        })
       }
 
       // Auto-generate password if not provided
@@ -414,12 +457,16 @@ router.post(
 
       const sendQrEmail = req.body.sendQrEmail === 'true' || req.body.sendQrEmail === '1'
 
+      // FR-22: pass quota info to import service so it can warn/truncate
+      const quotaInfo = await checkCourseQuota(req.programId, 0) // 0 = just get state, not checking +1
+
       const result = await importParticipantsCSV({
         csvBuffer: req.file.buffer,
         programId: req.programId,
         sendQrEmail,
         actingUserId: req.user.id,
         req,
+        quotaInfo, // FR-22: imported service may attach quota warning to result
       })
 
       res.json(result)
