@@ -669,17 +669,17 @@ Aturan yang sudah diputuskan dan **tidak perlu diperdebatkan ulang**:
 - **FR-21 — Pencarian global** ✅ Shipped *(2026-05-27)* — `GET /search?q=` scoped per role; dropdown UI di Topbar dengan keyboard nav (↑↓ Enter Esc, ⌘K), kategori: Program · Kursus · Sesi · Pengguna. Hanya aktif untuk role admin.
 - **FR-22 — Manajemen kuota kursus** ✅ Shipped *(2026-05-27)* — `Course.quota` di-enforce di semua enrollment path (single/create-participant/CSV import); kursus penuh → 409 QUOTA_FULL. UI: progress bar "N/quota" + badge "Penuh" di ProgramDetailScreen.
 - **FR-24 — Bulk certificate operations** ✅ Shipped *(2026-05-27)* — `POST /certificates/programs/:pid/issue-all` issue + kirim kode ke semua eligible sekaligus; tombol "Kirim semua (N)" + confirmation dialog di AdminCertSendScreen.
-- **FR-25 — Reminder pretest/posttest terjadwal** — perluasan pola cron sesi ke asesmen.
+- **FR-25 — Reminder pretest/posttest terjadwal** ✅ Shipped *(2026-05-27)* — Cron harian 02:00 UTC (`GET /tests/cron/test-reminders`, CRON_SECRET). Kirim email jika peserta belum pretest (>2 hari sejak enroll) atau belum posttest (pretest done + semua lesson selesai). Dedup via EmailLog kind=TEST_REMINDER, jendela 7 hari.
 
 **Prioritas Rendah / Eksplorasi**
-- **FR-26 — Analitik feedback AI** — manfaatkan data thumbs up/down untuk perbaikan KB.
-- **FR-27 — Penjadwalan ekspor laporan** — kirim laporan berkala via email otomatis.
-- **FR-28 — Tema/branding white-label per lembaga** — relevan bila produk dilisensikan ke banyak lembaga.
-- **FR-29 — Optimasi bundle frontend** — bundle saat ini ~1,37 MB; pertimbangkan code-splitting.
+- **FR-26 — Analitik feedback AI** ✅ Shipped *(2026-05-27)* — `GET /ai/programs/:pid/feedback-analytics` returns summary stats (conversations, upVotes, downVotes, ratedPct), topAnswers, lowAnswers, topDocs. Frontend: collapsible AIFeedbackPanel di KBScreen (staff only).
+- **FR-27 — Penjadwalan ekspor laporan** ✅ Shipped *(2026-05-27)* — Model ReportSchedule (WEEKLY/MONTHLY × PARTICIPANTS/COURSES/ATTENDANCE). CRUD `/reports/programs/:pid/schedules`. Cron harian 03:00 UTC generates CSV + email attachment. Tab "Schedules" di ReportsScreen.
+- **FR-28 — Tema/branding white-label per lembaga** ✅ Shipped *(2026-05-27)* — Model AppSetting (KV store). `GET /settings` (public) + `PUT /settings` (SUPER_ADMIN). Keys: institution_name, logo_url, primary_color, footer_text. SettingsScreen: full editor untuk SUPER_ADMIN, read-only untuk lainnya. Preview sidebar branding.
+- **FR-29 — Optimasi bundle frontend** ✅ Shipped *(2026-05-27)* — vite.config.js manualChunks(fn) pisahkan react, axios, hls.js, html5-qrcode, react-hot-toast. Main bundle: ~1,4 MB → 380 KB (gzip 93 KB).
 
 ### 11.3 Utang Teknis
 
-- Bundle JS frontend > 500 KB — kandidat *manual chunking* / *dynamic import* (lihat FR-29).
+- ~~Bundle JS frontend > 500 KB~~ → ✅ Diselesaikan FR-29: manualChunks, main bundle 380 KB gzip.
 
 > **Cleanup 2026-05-24:** `Course.is_published` legacy dihapus dari schema (semua pembaca beralih ke `Course.status`); `react-hot-toast` dikonsolidasi ke import statis; `@anthropic-ai/sdk` + `src/config/claude.js` dihapus (kode mati, AI sepenuhnya Gemini). Schema change butuh `npm run db:push` untuk drop kolom dari DB.
 
