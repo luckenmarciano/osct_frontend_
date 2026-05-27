@@ -607,6 +607,7 @@ model KnowledgeBaseDoc {
   file_size    Int?
   mime_type    String?
   embedded_at  DateTime?
+  embed_error  String?   // null = ok/pending; diisi jika parse/embed gagal
   created_at   DateTime  @default(now())
 
   program  OPRCProgram          @relation(fields: [program_id], references: [id], onDelete: Cascade)

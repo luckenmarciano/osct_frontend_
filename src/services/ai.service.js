@@ -1,5 +1,7 @@
 const prisma = require('../lib/prisma')
 const { getGeminiClient, CHAT_MODEL, EMBED_MODEL } = require('../config/gemini')
+const pdfParse = require('pdf-parse')
+const mammoth = require('mammoth')
 
 const EMBED_DIM = 768 // Gemini text-embedding-004
 
@@ -56,18 +58,80 @@ async function embedText(text, taskType = 'RETRIEVAL_DOCUMENT') {
 
 /**
  * Extract plain text from an uploaded file buffer.
- * Supports text/*. PDF/DOCX need additional parsers (pdf-parse, mammoth).
+ * - text/*        → UTF-8 decode
+ * - PDF           → pdf-parse (extracts all page text)
+ * - DOCX / Word   → mammoth (extracts paragraph text)
+ * Falls back to UTF-8 for unknown types.
  */
-function extractText(buffer, mimeType) {
-  if (mimeType?.startsWith('text/')) {
+async function extractText(buffer, mimeType) {
+  const mime = (mimeType || '').toLowerCase()
+
+  if (mime.startsWith('text/') || mime === 'text/plain') {
     return buffer.toString('utf-8')
   }
+
+  if (mime === 'application/pdf' || mime.includes('pdf')) {
+    try {
+      const data = await pdfParse(buffer)
+      const text = data.text?.trim()
+      if (!text) throw new Error('PDF parsed but no text found — may be scanned/image-only.')
+      console.log(`[extractText] PDF: ${data.numpages} pages, ${text.length} chars extracted`)
+      return text
+    } catch (err) {
+      console.error('[extractText] PDF parse error:', err.message)
+      throw new Error(`Gagal membaca PDF: ${err.message}`)
+    }
+  }
+
+  if (
+    mime.includes('wordprocessingml') ||   // .docx
+    mime.includes('msword') ||             // .doc (legacy)
+    mime.includes('officedocument')
+  ) {
+    try {
+      const result = await mammoth.extractRawText({ buffer })
+      const text = result.value?.trim()
+      if (result.messages?.length) {
+        result.messages.forEach((m) => console.warn('[extractText] mammoth:', m.message))
+      }
+      if (!text) throw new Error('DOCX parsed but no text found.')
+      console.log(`[extractText] DOCX: ${text.length} chars extracted`)
+      return text
+    } catch (err) {
+      console.error('[extractText] DOCX parse error:', err.message)
+      throw new Error(`Gagal membaca DOCX: ${err.message}`)
+    }
+  }
+
+  // Fallback: try UTF-8 (handles .md, .txt with wrong mime)
+  console.warn(`[extractText] Unknown mime "${mimeType}", falling back to UTF-8`)
   return buffer.toString('utf-8')
 }
 
 async function ingestDocument({ docId, programId, buffer, mimeType }) {
-  const text = extractText(buffer, mimeType)
+  let text
+  try {
+    text = await extractText(buffer, mimeType)
+  } catch (err) {
+    // Mark doc with error so UI can show "Gagal" instead of spinning forever
+    await prisma.knowledgeBaseDoc.update({
+      where: { id: docId },
+      data: { embed_error: err.message },
+    }).catch(() => {})
+    throw err
+  }
+
+  if (!text || text.trim().length < 10) {
+    const msg = 'Dokumen tidak mengandung teks yang bisa dibaca (mungkin gambar/scan).'
+    await prisma.knowledgeBaseDoc.update({
+      where: { id: docId },
+      data: { embed_error: msg },
+    }).catch(() => {})
+    throw new Error(msg)
+  }
+
   const chunks = chunkText(text)
+  console.log(`[ingestDocument] docId=${docId} → ${chunks.length} chunks dari ${text.length} chars`)
 
   for (let i = 0; i < chunks.length; i++) {
     const embedding = await embedText(chunks[i], 'RETRIEVAL_DOCUMENT')
@@ -86,7 +150,7 @@ async function ingestDocument({ docId, programId, buffer, mimeType }) {
 
   await prisma.knowledgeBaseDoc.update({
     where: { id: docId },
-    data: { embedded_at: new Date() },
+    data: { embedded_at: new Date(), embed_error: null },
   })
 }
 
