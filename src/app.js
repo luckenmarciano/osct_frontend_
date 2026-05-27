@@ -62,6 +62,7 @@ api.use('/users', require('./routes/users'))
 api.use('/reports', require('./routes/reports'))
 api.use('/emails', require('./routes/emails'))
 api.use('/notifications', require('./routes/notifications'))
+api.use('/search', require('./routes/search'))
 
 // Public certificate claim + verify (mounted at /api/v1)
 api.use('/', require('./routes/publicCert'))
