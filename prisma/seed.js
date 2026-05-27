@@ -123,7 +123,7 @@ async function main() {
     if (existing) {
       await prisma.course.update({
         where: { id: existing.id },
-        data: { status: 'PUBLISHED', is_published: true, quota: 30 },
+        data: { status: 'PUBLISHED', quota: 30 },
       })
       console.log(`  ✓ Course already present for ${code}: ${title}`)
       continue
@@ -135,7 +135,6 @@ async function main() {
         description: `Modul pengantar untuk ${programs[code].name}`,
         order_index: 0,
         status: 'PUBLISHED',
-        is_published: true,
         quota: 30,
         modules: {
           create: [

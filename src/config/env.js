@@ -11,7 +11,6 @@ const schema = z.object({
   JWT_ACCESS_EXPIRES: z.string().default('15m'),
   JWT_REFRESH_EXPIRES: z.string().default('7d'),
 
-  ANTHROPIC_API_KEY: z.string().optional().transform((v) => (v?.trim() ? v.trim() : undefined)),
   GEMINI_API_KEY: z.string().optional().transform((v) => (v?.trim() ? v.trim() : undefined)),
 
   SUPABASE_URL: z.string().optional().transform((v) => (v?.trim() ? v.trim() : undefined)),

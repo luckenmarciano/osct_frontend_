@@ -7,6 +7,7 @@ const { programIsolation } = require('../middleware/programIsolation')
 const { generateLoginQR } = require('../services/qr.service')
 const { sendLoginQREmail, sendCustomEmail } = require('../services/email.service')
 const { auditLog } = require('../services/audit.service')
+const { createNotif } = require('../services/notification.service')
 const { upload } = require('../middleware/upload')
 const {
   importParticipantsCSV,
@@ -500,6 +501,16 @@ router.post(
           sentById: req.user.id,
         }).catch((e) => console.error('[trainer-assign email]', e.message))
       }
+
+      // In-app notification (non-fatal)
+      createNotif({
+        userId:    userId,
+        type:      'TRAINER_ASSIGNED',
+        title:     `Anda ditugaskan sebagai trainer: ${program?.name || ''}`,
+        body:      `Buka halaman Dashboard atau Sesi untuk melihat detail program.`,
+        programId: req.programId,
+        refId:     `trainer-${userId}-${req.programId}`,
+      }).catch((e) => console.error('[trainer-assign notif]', e.message))
 
       auditLog({
         action: 'TRAINER_ASSIGNED',

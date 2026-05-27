@@ -3,6 +3,7 @@ const { z } = require('zod')
 const prisma = require('../lib/prisma')
 const { verifyJWT } = require('../middleware/auth')
 const { recomputeAttendancePct } = require('../services/enrollment.service')
+const { createNotif } = require('../services/notification.service')
 
 const router = express.Router()
 
@@ -109,6 +110,18 @@ router.post('/scan', verifyJWT, async (req, res, next) => {
       userId: req.user.id,
       programId: session.program_id,
     })
+
+    // Fire CERT_READY notification the first time this user becomes eligible
+    if (recomputed.justBecameEligible) {
+      createNotif({
+        userId:    req.user.id,
+        type:      'CERT_READY',
+        title:     'Selamat! Anda memenuhi syarat sertifikat',
+        body:      'Kunjungi halaman Sertifikat untuk mengklaim sertifikat Anda.',
+        programId: session.program_id,
+        refId:     `cert-ready-${req.user.id}-${session.program_id}`,
+      }).catch((e) => console.error('[cert-ready notif]', e.message))
+    }
 
     res.json({
       ok: true,

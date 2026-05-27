@@ -54,6 +54,15 @@ enum EmailKind {
   PASSWORD_RESET
 }
 
+// In-app notification types for FR-19.
+enum NotifType {
+  TRAINER_ASSIGNED  // trainer di-assign ke program
+  SESSION_REMINDER  // sesi tatap muka besok
+  ESSAY_GRADED      // jawaban esai sudah dinilai trainer
+  CERT_READY        // peserta memenuhi syarat sertifikat
+  TEST_AVAILABLE    // posttest terbuka (semua lesson selesai)
+}
+
 enum CourseStatus {
   DRAFT
   PUBLISHED
@@ -110,6 +119,7 @@ model User {
   sessions_trained  Session[]           @relation("TrainerSessions")
   refresh_tokens    RefreshToken[]
   trusted_devices   DeviceTrust[]
+  notifications     Notification[]
 
   @@map("users")
 }
@@ -265,10 +275,6 @@ model Course {
   title        String
   description  String       @db.Text
   order_index  Int          @default(0)
-  // Legacy boolean retained for backwards compatibility during the
-  // status enum migration; derived from `status` going forward and
-  // will be removed once all readers switch to `status`.
-  is_published Boolean      @default(false)
   status       CourseStatus @default(DRAFT)
   start_date   DateTime?
   end_date     DateTime?
@@ -688,4 +694,27 @@ model EmailLog {
 
   @@index([program_id, created_at])
   @@map("email_logs")
+}
+
+// ─── Notifications (FR-19) ────────────────────────────────────────────────────
+
+// One row = one in-app notification for a user. Created at event time; never
+// shown as fake/proxy data. Idempotent via (user_id, type, ref_id) dedup in
+// notification.service.js. read_at null means unread.
+model Notification {
+  id         String    @id @default(cuid())
+  user_id    String
+  type       NotifType
+  title      String
+  body       String?
+  program_id String?   // which program this notification belongs to (nullable for cross-program)
+  ref_id     String?   // source entity ID (session.id, attempt.id, "trainer-{uid}-{pid}", etc.)
+  read_at    DateTime?
+  created_at DateTime  @default(now())
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id, read_at])
+  @@index([user_id, created_at(sort: Desc)])
+  @@map("notifications")
 }

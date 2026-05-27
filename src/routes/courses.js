@@ -114,7 +114,6 @@ router.post(
         data: {
           ...data,
           program_id: req.programId,
-          is_published: data.status === 'PUBLISHED',
         },
       })
       res.status(201).json(course)
@@ -155,14 +154,9 @@ router.put(
         return res.status(400).json({ error: 'end_date harus setelah start_date' })
       }
 
-      const updateData = { ...data }
-      if (data.status !== undefined) {
-        updateData.is_published = data.status === 'PUBLISHED'
-      }
-
       const course = await prisma.course.update({
         where: { id: existing.id },
-        data: updateData,
+        data,
       })
       res.json(course)
     } catch (err) {

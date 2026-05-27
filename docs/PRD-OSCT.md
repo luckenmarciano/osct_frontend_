@@ -679,10 +679,9 @@ Aturan yang sudah diputuskan dan **tidak perlu diperdebatkan ulang**:
 
 ### 11.3 Utang Teknis
 
-- `Course.is_published` (boolean legacy) perlu dihapus setelah semua pembaca beralih ke `Course.status`.
-- Bundle JS frontend > 500 KB — kandidat *manual chunking* / *dynamic import*.
-- `react-hot-toast` di-import secara statis sekaligus dinamis — konsolidasikan.
-- `@anthropic-ai/sdk` + `src/config/claude.js` adalah kode mati — `claude.js` tidak diimpor di mana pun; layanan AI sepenuhnya memakai Gemini. Hapus dependency & file ini.
+- Bundle JS frontend > 500 KB — kandidat *manual chunking* / *dynamic import* (lihat FR-29).
+
+> **Cleanup 2026-05-24:** `Course.is_published` legacy dihapus dari schema (semua pembaca beralih ke `Course.status`); `react-hot-toast` dikonsolidasi ke import statis; `@anthropic-ai/sdk` + `src/config/claude.js` dihapus (kode mati, AI sepenuhnya Gemini). Schema change butuh `npm run db:push` untuk drop kolom dari DB.
 
 ---
 

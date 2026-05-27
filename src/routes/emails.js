@@ -9,6 +9,7 @@ const {
   sendBroadcastEmails,
   sendSessionReminderEmail,
 } = require('../services/email.service')
+const { createNotifsForMany } = require('../services/notification.service')
 
 const router = express.Router()
 
@@ -226,6 +227,19 @@ router.get('/cron/session-reminders', async (req, res, next) => {
         })
         totalSent += results.filter((r) => r.sent || r.mocked).length
         totalFailed += results.filter((r) => r.failed).length
+
+        // Also create in-app SESSION_REMINDER notifications (non-fatal)
+        const userIds = recipients.map((r) => r.id).filter(Boolean)
+        if (userIds.length > 0) {
+          createNotifsForMany({
+            userIds,
+            type:      'SESSION_REMINDER',
+            title:     `Pengingat sesi: ${session.title}`,
+            body:      `Sesi dijadwalkan besok. Program: ${session.program?.name || ''}.`,
+            programId: session.program_id,
+            refId:     `session-reminder-${session.id}`,
+          }).catch((e) => console.error('[session-reminder notif]', e.message))
+        }
       }
       await prisma.session.update({
         where: { id: session.id },

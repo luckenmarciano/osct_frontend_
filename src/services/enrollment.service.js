@@ -28,12 +28,16 @@ async function recomputeAttendancePct({ userId, programId }) {
     pct >= ATTENDANCE_THRESHOLD &&
     (enrollment.posttest_score ?? 0) >= POSTTEST_THRESHOLD
 
+  // Track whether eligibility changed false → true so callers can fire a
+  // CERT_READY notification exactly once.
+  const justBecameEligible = !enrollment.cert_eligible && eligible
+
   await prisma.programEnrollment.update({
     where: { id: enrollment.id },
     data: { attendance_pct: pct, cert_eligible: eligible },
   })
 
-  return { attendancePct: pct, certEligible: eligible }
+  return { attendancePct: pct, certEligible: eligible, justBecameEligible }
 }
 
 /**

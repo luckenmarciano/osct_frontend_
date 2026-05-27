@@ -10,6 +10,7 @@ const {
   ATTENDANCE_THRESHOLD,
 } = require('../services/enrollment.service')
 const { auditLog } = require('../services/audit.service')
+const { createNotif } = require('../services/notification.service')
 
 const router = express.Router()
 
@@ -482,6 +483,35 @@ router.post(
         metadata: { testType: attempt.test.type, score, gradedFor: attempt.user_id },
         req,
       })
+
+      // Notify the participant that their essay was graded (non-fatal)
+      const testLabel = attempt.test.type === 'PRETEST' ? 'pretest' : 'posttest'
+      createNotif({
+        userId:    attempt.user_id,
+        type:      'ESSAY_GRADED',
+        title:     `Esai ${testLabel} Anda sudah dinilai`,
+        body:      `Skor Anda: ${Math.round(score)}. Buka halaman Tes untuk melihat hasil lengkap.`,
+        programId: attempt.program_id,
+        refId:     attempt.id,
+      }).catch((e) => console.error('[essay-graded notif]', e.message))
+
+      // If grading posttest made the participant cert-eligible, notify them (non-fatal)
+      if (attempt.test.type === 'POSTTEST') {
+        recomputeAttendancePct({ userId: attempt.user_id, programId: attempt.program_id })
+          .then((r) => {
+            if (r.justBecameEligible) {
+              return createNotif({
+                userId:    attempt.user_id,
+                type:      'CERT_READY',
+                title:     'Selamat! Anda memenuhi syarat sertifikat',
+                body:      'Kunjungi halaman Sertifikat untuk mengklaim sertifikat Anda.',
+                programId: attempt.program_id,
+                refId:     `cert-ready-${attempt.user_id}-${attempt.program_id}`,
+              })
+            }
+          })
+          .catch((e) => console.error('[cert-ready notif from grading]', e.message))
+      }
 
       res.json({
         attemptId: updated.id,

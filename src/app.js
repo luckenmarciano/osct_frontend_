@@ -61,6 +61,7 @@ api.use('/kb', require('./routes/kb'))
 api.use('/users', require('./routes/users'))
 api.use('/reports', require('./routes/reports'))
 api.use('/emails', require('./routes/emails'))
+api.use('/notifications', require('./routes/notifications'))
 
 // Public certificate claim + verify (mounted at /api/v1)
 api.use('/', require('./routes/publicCert'))
