@@ -666,7 +666,7 @@ Aturan yang sudah diputuskan dan **tidak perlu diperdebatkan ulang**:
 - **FR-23 — Pelaporan kepatuhan IMO** — laporan terstandardisasi sesuai format regulator; menambah nilai jual & kredibilitas untuk lembaga pelatihan.
 
 **Prioritas Menengah**
-- **FR-21 — Pencarian global** — kolom pencarian di topnav belum fungsional (dan disembunyikan di mobile).
+- **FR-21 — Pencarian global** ✅ Shipped *(2026-05-27)* — `GET /search?q=` scoped per role; dropdown UI di Topbar dengan keyboard nav (↑↓ Enter Esc, ⌘K), kategori: Program · Kursus · Sesi · Pengguna. Hanya aktif untuk role admin.
 - **FR-22 — Manajemen kuota kursus** — `Course.quota` sudah ada di skema tetapi belum diberdayakan penuh.
 - **FR-24 — Bulk certificate operations** — terbitkan/kirim sertifikat satu batch sekaligus.
 - **FR-25 — Reminder pretest/posttest terjadwal** — perluasan pola cron sesi ke asesmen.
