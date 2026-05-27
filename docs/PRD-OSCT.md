@@ -667,8 +667,8 @@ Aturan yang sudah diputuskan dan **tidak perlu diperdebatkan ulang**:
 
 **Prioritas Menengah**
 - **FR-21 — Pencarian global** ✅ Shipped *(2026-05-27)* — `GET /search?q=` scoped per role; dropdown UI di Topbar dengan keyboard nav (↑↓ Enter Esc, ⌘K), kategori: Program · Kursus · Sesi · Pengguna. Hanya aktif untuk role admin.
-- **FR-22 — Manajemen kuota kursus** — `Course.quota` sudah ada di skema tetapi belum diberdayakan penuh.
-- **FR-24 — Bulk certificate operations** — terbitkan/kirim sertifikat satu batch sekaligus.
+- **FR-22 — Manajemen kuota kursus** ✅ Shipped *(2026-05-27)* — `Course.quota` di-enforce di semua enrollment path (single/create-participant/CSV import); kursus penuh → 409 QUOTA_FULL. UI: progress bar "N/quota" + badge "Penuh" di ProgramDetailScreen.
+- **FR-24 — Bulk certificate operations** ✅ Shipped *(2026-05-27)* — `POST /certificates/programs/:pid/issue-all` issue + kirim kode ke semua eligible sekaligus; tombol "Kirim semua (N)" + confirmation dialog di AdminCertSendScreen.
 - **FR-25 — Reminder pretest/posttest terjadwal** — perluasan pola cron sesi ke asesmen.
 
 **Prioritas Rendah / Eksplorasi**
